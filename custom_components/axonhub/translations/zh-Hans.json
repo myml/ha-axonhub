@@ -57,11 +57,44 @@
       },
       "quota_next_reset": {
         "name": "额度重置时间"
+      },
+      "requests_total": {
+        "name": "累计请求数"
+      },
+      "requests_failed": {
+        "name": "失败请求数"
+      },
+      "requests_today": {
+        "name": "今日请求数"
+      },
+      "requests_this_week": {
+        "name": "本周请求数"
+      },
+      "requests_last_week": {
+        "name": "上周请求数"
+      },
+      "requests_this_month": {
+        "name": "本月请求数"
+      },
+      "tokens_today": {
+        "name": "今日 Token"
+      },
+      "tokens_this_week": {
+        "name": "本周 Token"
+      },
+      "tokens_this_month": {
+        "name": "本月 Token"
+      },
+      "tokens_all_time": {
+        "name": "累计 Token"
       }
     },
     "binary_sensor": {
       "quota_ready": {
         "name": "额度可用"
+      },
+      "statistics_available": {
+        "name": "统计可用"
       }
     }
   },

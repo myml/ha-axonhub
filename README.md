@@ -19,6 +19,7 @@
 - AxonHub 至少有一个已启用、类型为 `claudecode`、`codex`、`github_copilot`、
   `nanogpt` 或 `nanogpt_responses` 的渠道。
 - 一个可以读取渠道的 AxonHub 账号：owner 账号，或拥有 `read:channels` 权限的角色/成员。
+  想同时看到请求数 / Token 这类实例统计，还需要 `read:dashboard` 权限（owner 账号默认两者都有）。
 - Home Assistant 2024.12 或更高版本。
 
 额度数据由 AxonHub 自己的后台任务采集，默认每 `provider_quota.check_interval`（20 分钟）
@@ -90,6 +91,53 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
   窗口若为空，就不会产生实体。
 - 状态实体在 `quota_data` 属性里带有 AxonHub 返回的原始数据；最近一次检查失败时还会有
   `error` 属性，适合用来做模板传感器。
+
+### 实例统计（请求数、Token）
+
+除了渠道设备，集成还会在 **AxonHub 实例设备**（就是设备列表里那台型号为 `AI gateway`
+的设备，名字是配置时填的地址）上挂一组实例级统计：
+
+| 实体 | 说明 |
+|------|------|
+| `sensor.<实例>_total_requests` | AxonHub 累计处理过的请求数，含失败。属性：`failed_requests`、`success_rate`。 |
+| `sensor.<实例>_failed_requests` | 累计失败请求数。 |
+| `sensor.<实例>_requests_today` / `_this_week` / `_this_month` | 今日 / 本周 / 本月的请求数（按 AxonHub 系统时区的自然日、自然周、自然月）。 |
+| `sensor.<实例>_requests_last_week` | 上周请求数，适合做周环比。 |
+| `sensor.<实例>_tokens_today` / `_this_week` / `_this_month` / `_all_time` | 各时间窗口的 Token 总量。属性：`input_tokens`、`output_tokens`、`cached_tokens`、`cache_hit_rate`。 |
+| `binary_sensor.<实例>_statistics_available` | AxonHub 是否返回实例统计。`off` 说明账号缺少 `read:dashboard` 权限（或 AxonHub 版本过旧），此时上面这些实体为 `unavailable`，**额度实体不受影响**。 |
+
+说明：
+
+- `<实例>` 是配置项标题转成的 slug。例如地址填 `192.168.0.100:18090`，
+  实体就是 `sensor.192_168_0_100_18090_total_requests`。
+- **累计请求数**（`total_requests`）与**窗口请求数**（`requests_today` 等）来自 AxonHub 的两张
+  不同表，所以两者对不上是正常的：前者是 AxonHub 的请求过程记录（含失败），后者只统计产生
+  了结果的请求（也就是 AxonHub 仪表盘上画的那些数）。
+- Token 总量 = 输入 + 输出 + 缓存读取。AxonHub 的 `prompt_tokens` **不含**缓存命中的部分，
+  所以集成把它们加回来，并额外给出 `cache_hit_rate`（缓存命中率 = 缓存读取 ÷（输入 + 缓存读取））。
+- 请求数是累计值（`total_requests`、`failed_requests`）与周期性重置的窗口值，因此用
+  `total_increasing` 统计类型，可以直接在统计图上按天/周/月看增量；`requests_last_week`
+  是固定窗口，用普通测量值。
+- 这组统计走的是 AxonHub 的 `dashboardOverview` / `tokenStats` 查询，需要一个拥有
+  `read:dashboard` 权限的账号（owner 账号默认就有）。它和额度用的 `read:channels` 相互独立，
+  集成里也是两个协调器：统计拿不到只影响上面这组实体。
+
+仪表盘卡片示例：
+
+```yaml
+type: entities
+title: AxonHub
+entities:
+  - entity: sensor.192_168_0_100_18090_requests_today
+  - entity: sensor.192_168_0_100_18090_requests_this_week
+  - entity: sensor.192_168_0_100_18090_total_requests
+  - entity: sensor.192_168_0_100_18090_tokens_today
+  - entity: sensor.192_168_0_100_18090_tokens_this_week
+  - type: attribute
+    entity: sensor.192_168_0_100_18090_tokens_this_week
+    attribute: cache_hit_rate
+    name: 缓存命中率
+```
 
 ### 服务 `axonhub.refresh_quotas`
 
@@ -168,11 +216,14 @@ Home Assistant                        AxonHub
 POST /admin/auth/signin        ──▶    邮箱/密码 → 有效期 7 天的 JWT
 POST /admin/graphql            ──▶    queryChannels → providerQuotaStatus
                                       (status, nextResetAt, ready, quotaData)
+                               ──▶    dashboardOverview + tokenStats
+                                      (请求数、Token 数，实例级统计)
 ```
 
 之所以调用管理端 GraphQL，是因为它是 AxonHub 唯一暴露额度数据的入口——基于 API Key 的
 `/openapi/v1/graphql` 只允许创建 API Key。各供应商 `quotaData` 的字段结构记录在
-`custom_components/axonhub/quota.py` 的模块注释里。
+`custom_components/axonhub/quota.py` 的模块注释里，实例统计的字段与口径记录在
+`custom_components/axonhub/stats.py` 的模块注释里。
 
 ## 故障排查
 
@@ -186,6 +237,7 @@ POST /admin/graphql            ──▶    queryChannels → providerQuotaStatu
 | 没有任何渠道设备 | 渠道未启用，或类型不属于上面列出的可查额度类型。没有额度检查器的渠道会被有意忽略。 |
 | 状态一直是 `unknown`，或缺少窗口传感器 | AxonHub 还没产出额度数据（首次检查未执行），或供应商检查失败。请看状态实体的 `error` 属性和 AxonHub 日志。 |
 | 实体消失 | 渠道被禁用、删除，或类型改成了没有额度检查器的类型；集成会自动移除过期实体。 |
+| 统计实体是 `unavailable`，`binary_sensor.<实例>_statistics_available` 为 `off` | 该账号没有 `read:dashboard` 权限（或 AxonHub 版本过旧）。换用 owner 账号，或给角色补上 `read:dashboard`。额度实体不受影响。 |
 
 ## 安全说明
 

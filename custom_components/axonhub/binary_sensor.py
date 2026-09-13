@@ -10,9 +10,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import AxonHubRuntime
 from .const import DOMAIN
-from .coordinator import AxonHubQuotaCoordinator
-from .entity import AxonHubEntity, AxonHubEntityManager
+from .coordinator import AxonHubQuotaCoordinator, AxonHubStatsCoordinator
+from .entity import AxonHubEntity, AxonHubEntityManager, AxonHubHubEntity
 
 
 async def async_setup_entry(
@@ -21,11 +22,14 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the AxonHub binary sensors."""
-    coordinator: AxonHubQuotaCoordinator = hass.data[DOMAIN][entry.entry_id]
+    runtime: AxonHubRuntime = hass.data[DOMAIN][entry.entry_id]
+    coordinator = runtime.quota
 
     manager = AxonHubEntityManager(coordinator, async_add_entities, _build_entities)
     await manager.async_sync()
     entry.async_on_unload(coordinator.async_add_listener(manager.async_schedule_sync))
+
+    async_add_entities([AxonHubStatisticsAvailableSensor(runtime.stats)])
 
 
 def _build_entities(
@@ -36,6 +40,29 @@ def _build_entities(
         f"{channel_key}_ready": AxonHubQuotaReadySensor(coordinator, channel_key)
         for channel_key in (coordinator.data or {})
     }
+
+
+class AxonHubStatisticsAvailableSensor(AxonHubHubEntity, BinarySensorEntity):
+    """Whether AxonHub answers the instance wide statistics query.
+
+    Off means the configured account may not read the dashboard (the
+    ``read:dashboard`` scope is missing) or the AxonHub build predates the
+    dashboard API; the quota sensors are unaffected either way. Handy as a
+    template condition when a dashboard card should hide itself.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.RUNNING
+    _attr_translation_key = "statistics_available"
+    _requires_stats = False
+
+    def __init__(self, coordinator: AxonHubStatsCoordinator) -> None:
+        """Initialize the statistics availability sensor."""
+        super().__init__(coordinator, "statistics_available")
+
+    @property
+    def is_on(self) -> bool:
+        """Return True while AxonHub returns dashboard statistics."""
+        return self.stats is not None
 
 
 class AxonHubQuotaReadySensor(AxonHubEntity, BinarySensorEntity):

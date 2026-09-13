@@ -16,6 +16,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.axonhub.api import (
@@ -114,6 +115,37 @@ CHANNELS = [
     node(4, "Plain Anthropic", "anthropic", None),
 ]
 
+# Shape of the `dashboardOverview` + `tokenStats` response, trimmed to the
+# fields the integration reads.
+DASHBOARD_DATA: dict[str, Any] = {
+    "dashboardOverview": {
+        "totalRequests": 4210,
+        "failedRequests": 37,
+        "averageResponseTime": None,
+        "requestStats": {
+            "requestsToday": 128,
+            "requestsThisWeek": 942,
+            "requestsLastWeek": 1180,
+            "requestsThisMonth": 3905,
+        },
+    },
+    "tokenStats": {
+        "totalInputTokensToday": 120000,
+        "totalOutputTokensToday": 8000,
+        "totalCachedTokensToday": 40000,
+        "totalInputTokensThisWeek": 900000,
+        "totalOutputTokensThisWeek": 60000,
+        "totalCachedTokensThisWeek": 300000,
+        "totalInputTokensThisMonth": 3000000,
+        "totalOutputTokensThisMonth": 200000,
+        "totalCachedTokensThisMonth": 1000000,
+        "totalInputTokensAllTime": 12000000,
+        "totalOutputTokensAllTime": 800000,
+        "totalCachedTokensAllTime": 4000000,
+        "lastUpdated": "2026-01-01T00:00:00Z",
+    },
+}
+
 
 class PatchedClient:
     """Records which client methods the integration called."""
@@ -121,9 +153,12 @@ class PatchedClient:
     def __init__(self) -> None:
         self.signins = 0
         self.channel_reads = 0
+        self.stats_reads = 0
         self.checks = 0
         self.fail_auth = False
         self.api_error: str | None = None
+        self.stats_error: str | None = None
+        self.stats: dict[str, Any] = DASHBOARD_DATA
 
 
 @pytest.fixture
@@ -146,11 +181,22 @@ def patched_client(monkeypatch: pytest.MonkeyPatch) -> PatchedClient:
             raise AxonHubApiError(recorder.api_error)
         return CHANNELS
 
+    async def _get_dashboard_stats(self) -> dict[str, Any]:
+        recorder.stats_reads += 1
+        if recorder.fail_auth:
+            raise AxonHubAuthError("Invalid email or password")
+        if recorder.stats_error:
+            raise AxonHubApiError(recorder.stats_error)
+        return recorder.stats
+
     async def _trigger(self) -> None:
         recorder.checks += 1
 
     monkeypatch.setattr(AxonHubClient, "async_sign_in", _sign_in)
     monkeypatch.setattr(AxonHubClient, "async_get_channels", _get_channels)
+    monkeypatch.setattr(
+        AxonHubClient, "async_get_dashboard_stats", _get_dashboard_stats
+    )
     monkeypatch.setattr(AxonHubClient, "async_trigger_quota_check", _trigger)
     return recorder
 
@@ -196,10 +242,13 @@ async def test_config_flow_creates_entry(
     assert result["type"] == "create_entry"
     assert result["title"] == "axon.local:8090"
     assert result["data"][CONF_BASE_URL] == BASE_URL
-    assert patched_client.signins == 1
+    # One sign-in for the credential check; the client caches its JWT for the
+    # quota and statistics reads that follow.
+    assert patched_client.signins >= 1
     # Validation reads the channels once; Home Assistant then sets the freshly
     # created entry up, which reads them again.
     assert patched_client.channel_reads >= 1
+    assert patched_client.stats_reads >= 1
 
 
 async def test_config_flow_rejects_bad_credentials(
@@ -353,6 +402,102 @@ async def test_setup_creates_quota_entities(
     )
     assert hub.name == "axon.local:8090"
     assert hub.configuration_url == BASE_URL
+
+
+async def test_setup_creates_instance_statistics(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """The hub device carries the request and token counters of the instance."""
+    entry = make_entry()
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    total = hass.states.get("sensor.axon_local_8090_total_requests")
+    assert total is not None, sorted(hass.states.async_entity_ids())
+    assert total.state == "4210"
+    assert total.attributes["unit_of_measurement"] == "requests"
+    assert total.attributes["failed_requests"] == 37
+    assert total.attributes["success_rate"] == 99.12
+    # AxonHub does not compute the average yet, so it must stay absent instead
+    # of showing up as None.
+    assert "average_response_time" not in total.attributes
+
+    assert hass.states.get("sensor.axon_local_8090_failed_requests").state == "37"
+    assert hass.states.get("sensor.axon_local_8090_requests_today").state == "128"
+    assert hass.states.get("sensor.axon_local_8090_requests_this_week").state == "942"
+    assert hass.states.get("sensor.axon_local_8090_requests_last_week").state == "1180"
+    assert hass.states.get("sensor.axon_local_8090_requests_this_month").state == "3905"
+
+    # Cached input tokens are excluded from prompt_tokens upstream, so the total
+    # adds them back: 120000 + 8000 + 40000.
+    today = hass.states.get("sensor.axon_local_8090_tokens_today")
+    assert today is not None
+    assert today.state == "168000"
+    assert today.attributes["unit_of_measurement"] == "tokens"
+    assert today.attributes["input_tokens"] == 120000
+    assert today.attributes["output_tokens"] == 8000
+    assert today.attributes["cached_tokens"] == 40000
+    assert today.attributes["cache_hit_rate"] == 25.0
+
+    assert hass.states.get("sensor.axon_local_8090_tokens_this_week").state == "1260000"
+    assert (
+        hass.states.get("sensor.axon_local_8090_tokens_this_month").state == "4200000"
+    )
+    assert hass.states.get("sensor.axon_local_8090_tokens_all_time").state == "16800000"
+
+    available = hass.states.get("binary_sensor.axon_local_8090_statistics_available")
+    assert available is not None
+    assert available.state == "on"
+
+    # Every instance entity belongs to the hub device rather than a new one.
+    devices = dr.async_get(hass)
+    hub = next(
+        device
+        for device in devices.devices
+        if (DOMAIN, entry.entry_id) in device.identifiers
+    )
+    registry = er.async_get(hass)
+    hub_entities = {
+        registry.async_get(entity_id).device_id
+        for entity_id in (
+            "sensor.axon_local_8090_total_requests",
+            "sensor.axon_local_8090_tokens_today",
+            "binary_sensor.axon_local_8090_statistics_available",
+        )
+    }
+    assert hub_entities == {hub.id}
+
+
+async def test_statistics_failure_keeps_quota_entities(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """An account without the dashboard scope only loses the instance sensors."""
+    patched_client.stats_error = (
+        "authz: principal user:1 does not have required scope read:dashboard"
+    )
+
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    # Quota entities keep working...
+    assert hass.states.get("sensor.claude_max_5h_window_used").state == "82.0"
+    # ...while the instance statistics report themselves as unavailable.
+    assert (
+        hass.states.get("binary_sensor.axon_local_8090_statistics_available").state
+        == "off"
+    )
+    for entity_id in (
+        "sensor.axon_local_8090_total_requests",
+        "sensor.axon_local_8090_tokens_today",
+    ):
+        state = hass.states.get(entity_id)
+        assert state is not None
+        assert state.state == "unavailable"
 
 
 async def test_refresh_quotas_service(

@@ -21,9 +21,41 @@ from custom_components.axonhub.api import (
     AxonHubClient,
     AxonHubConnectionError,
 )
+from custom_components.axonhub.stats import build_stats
 
 EMAIL = "me@example.com"
 PASSWORD = "secret"
+
+# The `dashboardOverview` + `tokenStats` payload the integration reads.
+# `averageResponseTime` is null upstream today, so the tests keep it null.
+DASHBOARD_RESPONSE = {
+    "dashboardOverview": {
+        "totalRequests": 4210,
+        "failedRequests": 37,
+        "averageResponseTime": None,
+        "requestStats": {
+            "requestsToday": 128,
+            "requestsThisWeek": 942,
+            "requestsLastWeek": 1180,
+            "requestsThisMonth": 3905,
+        },
+    },
+    "tokenStats": {
+        "totalInputTokensToday": 120000,
+        "totalOutputTokensToday": 8000,
+        "totalCachedTokensToday": 40000,
+        "totalInputTokensThisWeek": 900000,
+        "totalOutputTokensThisWeek": 60000,
+        "totalCachedTokensThisWeek": 300000,
+        "totalInputTokensThisMonth": 3000000,
+        "totalOutputTokensThisMonth": 200000,
+        "totalCachedTokensThisMonth": 1000000,
+        "totalInputTokensAllTime": 12000000,
+        "totalOutputTokensAllTime": 800000,
+        "totalCachedTokensAllTime": 4000000,
+        "lastUpdated": "2026-01-01T00:00:00Z",
+    },
+}
 
 CLAUDE_CHANNEL = {
     "id": "gid://axonhub/channel/1",
@@ -260,6 +292,9 @@ class MockAxonHub:
         if "checkProviderQuotas" in query:
             self.checks += 1
             return web.json_response({"data": {"checkProviderQuotas": True}})
+
+        if "dashboardOverview" in query:
+            return web.json_response({"data": DASHBOARD_RESPONSE})
 
         if "queryChannels" in query:
             channels = CHANNELS
@@ -635,3 +670,73 @@ async def test_channel_quota_parsing(mock_axonhub: Any) -> None:
     assert broken.status == "unknown"
     assert broken.metrics == []
     assert broken.error == "quota request failed: 401 unauthorized"
+
+
+async def test_dashboard_stats_query(mock_axonhub: Any) -> None:
+    """The statistics client asks for both aggregates in one round trip."""
+    import aiohttp
+
+    state, base_url = mock_axonhub
+
+    async with aiohttp.ClientSession() as session:
+        client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
+        payload = await client.async_get_dashboard_stats()
+
+    assert payload["dashboardOverview"]["totalRequests"] == 4210
+    assert payload["tokenStats"]["totalInputTokensAllTime"] == 12000000
+
+    body = state.graphql_bodies[-1]
+    assert "dashboardOverview" in body["query"]
+    assert "tokenStats" in body["query"]
+    # No variables: both are root fields without arguments.
+    assert "variables" not in body
+
+    stats = build_stats(payload)
+    assert stats is not None
+    assert stats.requests.total == 4210
+    assert stats.requests.failed == 37
+    assert stats.requests.today == 128
+    assert stats.requests.last_week == 1180
+    assert stats.requests.success_rate == 99.12
+    assert stats.tokens_today.total == 168000
+    assert stats.tokens_today.cache_hit_rate == 25.0
+    assert stats.tokens_all_time.total == 16800000
+
+
+async def test_dashboard_stats_scope_error_is_an_api_error(
+    mock_axonhub: Any,
+) -> None:
+    """A denied dashboard query surfaces the scope message to the caller."""
+    import aiohttp
+
+    state, base_url = mock_axonhub
+    state.graphql_error = (
+        "authz: principal user:1 does not have required scope read:dashboard"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
+        with pytest.raises(AxonHubApiError) as err:
+            await client.async_get_dashboard_stats()
+
+    assert "read:dashboard" in str(err.value)
+
+
+def test_build_stats_tolerates_partial_payloads() -> None:
+    """Partial GraphQL answers degrade to zeros instead of raising."""
+    # Neither field resolved: the caller must be able to tell "no statistics".
+    assert build_stats({"dashboardOverview": None, "tokenStats": None}) is None
+    assert build_stats({}) is None
+
+    # Only the token aggregate resolved: requests fall back to zero, and an
+    # all-zero window reports no cache hit rate rather than a bogus 0%.
+    stats = build_stats(
+        {"tokenStats": {"totalInputTokensToday": 10, "totalOutputTokensToday": 5}}
+    )
+    assert stats is not None
+    assert stats.requests.total == 0
+    assert stats.requests.success_rate is None
+    assert stats.tokens_today.total == 15
+    assert stats.tokens_today.cache_hit_rate == 0.0
+    assert stats.tokens_this_week.total == 0
+    assert stats.tokens_this_week.cache_hit_rate is None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
@@ -12,8 +13,24 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_BASE_URL, DOMAIN
-from .coordinator import AxonHubQuotaCoordinator
+from .coordinator import AxonHubQuotaCoordinator, AxonHubStatsCoordinator
 from .quota import ChannelQuota
+
+
+def hub_device_info(entry: ConfigEntry) -> DeviceInfo:
+    """Return the device info of the AxonHub instance itself.
+
+    The same identifiers are used by ``__init__.py`` when it creates the hub
+    device, so the instance sensors land on that device instead of creating a
+    second one next to it.
+    """
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.title,
+        manufacturer="AxonHub",
+        model="AI gateway",
+        configuration_url=entry.data.get(CONF_BASE_URL),
+    )
 
 
 class AxonHubEntity(CoordinatorEntity[AxonHubQuotaCoordinator]):
@@ -57,6 +74,49 @@ class AxonHubEntity(CoordinatorEntity[AxonHubQuotaCoordinator]):
             else "AxonHub channel",
             configuration_url=entry.data.get(CONF_BASE_URL),
         )
+
+
+class AxonHubHubEntity(CoordinatorEntity[AxonHubStatsCoordinator]):
+    """Base class for instance wide entities attached to the AxonHub device.
+
+    These carry no channel; they describe the AxonHub instance as a whole, which
+    is why they live on the hub device ``__init__.py`` registers.
+    """
+
+    _attr_has_entity_name = True
+
+    # Entities whose only job is to report whether the statistics are there must
+    # stay available while they are missing, everyone else goes unavailable.
+    _requires_stats = True
+
+    def __init__(
+        self, coordinator: AxonHubStatsCoordinator, unique_suffix: str
+    ) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_{unique_suffix}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the AxonHub instance device."""
+        return hub_device_info(self.coordinator.entry)
+
+    @property
+    def available(self) -> bool:
+        """Return False while AxonHub will not answer the dashboard query.
+
+        The coordinator keeps ``last_update_success`` true and stores ``None``
+        when the account lacks the ``read:dashboard`` scope, so the state comes
+        from the payload rather than from the update result.
+        """
+        if not super().available:
+            return False
+        return self.stats is not None or not self._requires_stats
+
+    @property
+    def stats(self):
+        """Return the latest instance statistics, if AxonHub answered."""
+        return self.coordinator.data
 
 
 EntityBuilder = Callable[[AxonHubQuotaCoordinator], "dict[str, Entity]"]

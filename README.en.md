@@ -21,7 +21,9 @@ provider API calls.
 - AxonHub with at least one enabled channel of type `claudecode`, `codex`,
   `github_copilot`, `nanogpt` or `nanogpt_responses`.
 - An AxonHub account allowed to read channels: the owner account, or a
-  role/membership holding the `read:channels` scope.
+  role/membership holding the `read:channels` scope. Seeing the instance wide
+  request/token statistics as well needs the `read:dashboard` scope (the owner
+  account has both).
 - Home Assistant 2024.12 or newer.
 
 Quota data is collected by AxonHub's own background check, which runs every
@@ -101,6 +103,57 @@ Notes:
   plus `error` when the last provider check failed, which makes it a good source for
   template sensors.
 
+### Instance statistics (requests, tokens)
+
+Next to the channel devices, the integration puts a set of instance wide statistics on
+the **AxonHub device** — the device with model `AI gateway` whose name is the URL you
+configured:
+
+| Entity | Description |
+|--------|-------------|
+| `sensor.<instance>_total_requests` | Every request AxonHub has tracked, failures included. Attributes: `failed_requests`, `success_rate`. |
+| `sensor.<instance>_failed_requests` | Requests that ended in a failure. |
+| `sensor.<instance>_requests_today` / `_this_week` / `_this_month` | Request count of the current calendar day / week / month in AxonHub's timezone. |
+| `sensor.<instance>_requests_last_week` | Previous week, for week-over-week comparisons. |
+| `sensor.<instance>_tokens_today` / `_this_week` / `_this_month` / `_all_time` | Total tokens per window. Attributes: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_hit_rate`. |
+| `binary_sensor.<instance>_statistics_available` | Whether AxonHub returns the statistics. `off` means the account lacks the `read:dashboard` scope (or the AxonHub build is too old); the statistics entities then read `unavailable` while **every quota entity keeps working**. |
+
+Notes:
+
+- `<instance>` is the slugified config entry title. A URL of `192.168.0.100:18090`, for
+  example, yields `sensor.192_168_0_100_18090_total_requests`.
+- `total_requests` and the window counters (`requests_today`, …) come from two different
+  AxonHub tables, so they are not supposed to match: the former counts AxonHub's request
+  process rows (failures included), the latter counts requests that produced a result —
+  the numbers the AxonHub dashboard charts.
+- A window's total is input + output + cached. AxonHub keeps cached prompt tokens *out*
+  of `prompt_tokens`, so the integration adds them back and exposes the derived
+  `cache_hit_rate` (cached ÷ (input + cached)).
+- The counters use the `total_increasing` state class, so Home Assistant can chart daily
+  and weekly deltas even though the calendar windows reset. `requests_last_week` is a
+  fixed past window and stays a plain measurement.
+- These values come from AxonHub's `dashboardOverview` / `tokenStats` queries and need an
+  account with the `read:dashboard` scope (the owner account has it). That scope is
+  independent of the `read:channels` the quotas need, and the integration polls them with
+  a separate coordinator, so a missing scope only hides the entities above.
+
+Dashboard card example:
+
+```yaml
+type: entities
+title: AxonHub
+entities:
+  - entity: sensor.192_168_0_100_18090_requests_today
+  - entity: sensor.192_168_0_100_18090_requests_this_week
+  - entity: sensor.192_168_0_100_18090_total_requests
+  - entity: sensor.192_168_0_100_18090_tokens_today
+  - entity: sensor.192_168_0_100_18090_tokens_this_week
+  - type: attribute
+    entity: sensor.192_168_0_100_18090_tokens_this_week
+    attribute: cache_hit_rate
+    name: Cache hit rate
+```
+
 ### Service `axonhub.refresh_quotas`
 
 Asks AxonHub to re-check every provider quota immediately instead of waiting for the
@@ -169,12 +222,15 @@ Home Assistant                        AxonHub
 POST /admin/auth/signin        ──▶    email/password → 7-day JWT
 POST /admin/graphql            ──▶    queryChannels → providerQuotaStatus
                                       (status, nextResetAt, ready, quotaData)
+                               ──▶    dashboardOverview + tokenStats
+                                      (request and token counters, instance wide)
 ```
 
 The admin GraphQL endpoint is used because it is the only AxonHub surface that
 exposes quota data; the API-key based `/openapi/v1/graphql` endpoint only allows
 creating API keys. Per-provider `quotaData` shapes are documented in
-`custom_components/axonhub/quota.py`.
+`custom_components/axonhub/quota.py`, the instance statistics in
+`custom_components/axonhub/stats.py`.
 
 ## Troubleshooting
 
@@ -188,6 +244,7 @@ creating API keys. Per-provider `quotaData` shapes are documented in
 | No channel devices appear | The channel is not enabled, or its type is not one of the quota-enabled types listed above. Channels without a quota checker are ignored on purpose. |
 | Status stays `unknown` or window sensors are missing | AxonHub has not produced quota data yet (first check pending), or the provider check failed. Inspect the `error` attribute of the status sensor and the AxonHub logs. |
 | Entities disappear | The channel was disabled, deleted or changed to a type without a quota checker; the integration removes stale entities automatically. |
+| Statistics entities read `unavailable` and `binary_sensor.<instance>_statistics_available` is `off` | The account lacks the `read:dashboard` scope (or the AxonHub build is too old). Use the owner account or grant `read:dashboard`. Quota entities are unaffected. |
 
 ## Security notes
 

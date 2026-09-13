@@ -81,6 +81,52 @@ query HomeAssistantProviderQuotas($input: QueryChannelInput!) {
 }
 """
 
+# Instance wide aggregates for the hub device: request counters and token sums.
+#
+# `dashboardOverview.requestStats` counts `usage_logs` rows (successful results,
+# the numbers the AxonHub dashboard charts) while `totalRequests` /
+# `failedRequests` count rows of the `requests` table (process tracking, so
+# failures are included). Both are requested so the difference stays visible in
+# the entities instead of being silently reconciled here.
+#
+# `tokenStats` covers today/week/month/all-time in one field; the all-time part
+# is served from an upstream stale-while-revalidate cache, so polling it on the
+# regular scan interval does not add a table scan every time.
+#
+# `averageResponseTime` is nullable upstream (AxonHub does not compute it yet);
+# it is requested anyway so it starts working without another integration
+# release once AxonHub fills it in.
+DASHBOARD_STATS_QUERY = """
+query HomeAssistantDashboardStats {
+  dashboardOverview {
+    totalRequests
+    failedRequests
+    averageResponseTime
+    requestStats {
+      requestsToday
+      requestsThisWeek
+      requestsLastWeek
+      requestsThisMonth
+    }
+  }
+  tokenStats {
+    totalInputTokensToday
+    totalOutputTokensToday
+    totalCachedTokensToday
+    totalInputTokensThisWeek
+    totalOutputTokensThisWeek
+    totalCachedTokensThisWeek
+    totalInputTokensThisMonth
+    totalOutputTokensThisMonth
+    totalCachedTokensThisMonth
+    totalInputTokensAllTime
+    totalOutputTokensAllTime
+    totalCachedTokensAllTime
+    lastUpdated
+  }
+}
+"""
+
 # Forces AxonHub to re-check every channel against its provider right away
 # instead of waiting for the periodic (default 20m) background check.
 TRIGGER_CHECK_MUTATION = """
@@ -309,6 +355,24 @@ class AxonHubClient:
             _attach_quota_errors(channels, edge_indexes, errors)
 
         return channels
+
+    async def async_get_dashboard_stats(self) -> dict[str, Any]:
+        """Return AxonHub's instance wide dashboard aggregates.
+
+        Raises :class:`AxonHubApiError` when AxonHub refuses both root fields —
+        typically an account without the ``read:dashboard`` scope, or an older
+        build that predates the dashboard API. GraphQL allows a partial answer,
+        so a single failing field still returns the other one.
+        """
+        data, errors = await self.async_graphql_with_errors(DASHBOARD_STATS_QUERY)
+
+        if errors:
+            _LOGGER.debug(
+                "AxonHub answered the dashboard statistics partially: %s",
+                _format_graphql_errors(errors),
+            )
+
+        return data
 
     async def async_trigger_quota_check(self) -> None:
         """Ask AxonHub to re-check every provider quota right now.

@@ -57,11 +57,44 @@
       },
       "quota_next_reset": {
         "name": "Next quota reset"
+      },
+      "requests_total": {
+        "name": "Total requests"
+      },
+      "requests_failed": {
+        "name": "Failed requests"
+      },
+      "requests_today": {
+        "name": "Requests today"
+      },
+      "requests_this_week": {
+        "name": "Requests this week"
+      },
+      "requests_last_week": {
+        "name": "Requests last week"
+      },
+      "requests_this_month": {
+        "name": "Requests this month"
+      },
+      "tokens_today": {
+        "name": "Tokens today"
+      },
+      "tokens_this_week": {
+        "name": "Tokens this week"
+      },
+      "tokens_this_month": {
+        "name": "Tokens this month"
+      },
+      "tokens_all_time": {
+        "name": "Tokens all time"
       }
     },
     "binary_sensor": {
       "quota_ready": {
         "name": "Quota ready"
+      },
+      "statistics_available": {
+        "name": "Statistics available"
       }
     }
   },

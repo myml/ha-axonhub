@@ -6,6 +6,7 @@ that AxonHub tracks for each channel as Home Assistant sensors.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 
 import voluptuous as vol
@@ -21,7 +22,8 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import AxonHubClient, AxonHubError
 from .config_flow import scan_interval_for_entry, verify_ssl_for_entry
 from .const import ATTR_ENTRY_ID, CONF_BASE_URL, DOMAIN, SERVICE_REFRESH_QUOTAS
-from .coordinator import AxonHubQuotaCoordinator
+from .coordinator import AxonHubQuotaCoordinator, AxonHubStatsCoordinator
+from .entity import hub_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +32,14 @@ PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 REFRESH_QUOTAS_SCHEMA = vol.Schema({vol.Optional(ATTR_ENTRY_ID): cv.string})
+
+
+@dataclass(slots=True)
+class AxonHubRuntime:
+    """The coordinators belonging to one AxonHub config entry."""
+
+    quota: AxonHubQuotaCoordinator
+    stats: AxonHubStatsCoordinator
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -54,17 +64,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ConfigEntryNotReady on the first failure.
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    # The instance statistics need a different AxonHub scope than the channel
+    # quotas, so they get their own coordinator and a failure to fetch them must
+    # never fail the config entry. `async_refresh()` never raises, and the
+    # coordinator itself turns "not allowed / not supported" into empty data.
+    stats_coordinator = AxonHubStatsCoordinator(
+        hass, entry, client, scan_interval_for_entry(entry)
+    )
+    await stats_coordinator.async_refresh()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = AxonHubRuntime(
+        quota=coordinator, stats=stats_coordinator
+    )
 
     # Register a device for the AxonHub instance itself; every channel device
-    # shows up under the same config entry.
+    # shows up under the same config entry. The instance sensors use the very
+    # same identifiers, so they attach to this device.
     dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, entry.entry_id)},
-        name=entry.title,
-        manufacturer="AxonHub",
-        model="AI gateway",
-        configuration_url=entry.data.get(CONF_BASE_URL),
+        **hub_device_info(entry),
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -80,10 +98,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
 
-    coordinators: dict[str, AxonHubQuotaCoordinator] = hass.data.get(DOMAIN, {})
-    coordinators.pop(entry.entry_id, None)
+    runtimes: dict[str, AxonHubRuntime] = hass.data.get(DOMAIN, {})
+    runtimes.pop(entry.entry_id, None)
 
-    if not coordinators:
+    if not runtimes:
         hass.services.async_remove(DOMAIN, SERVICE_REFRESH_QUOTAS)
         hass.data.pop(DOMAIN, None)
 
@@ -102,18 +120,18 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return
 
     async def _async_handle_refresh(call: ServiceCall) -> None:
-        coordinators: dict[str, AxonHubQuotaCoordinator] = hass.data.get(DOMAIN, {})
+        runtimes: dict[str, AxonHubRuntime] = hass.data.get(DOMAIN, {})
         entry_id = call.data.get(ATTR_ENTRY_ID)
 
         if entry_id:
-            coordinator = coordinators.get(entry_id)
-            if coordinator is None:
+            runtime = runtimes.get(entry_id)
+            if runtime is None:
                 raise ServiceValidationError(
                     f"Unknown AxonHub config entry: {entry_id}"
                 )
-            targets = [coordinator]
+            targets = [runtime.quota]
         else:
-            targets = list(coordinators.values())
+            targets = [runtime.quota for runtime in runtimes.values()]
 
         if not targets:
             raise ServiceValidationError("AxonHub is not configured")
@@ -125,6 +143,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 raise HomeAssistantError(
                     f"Failed to refresh AxonHub provider quotas: {err}"
                 ) from err
+            # The forced check stores fresh usage on AxonHub, so the token and
+            # request counters move with it — refresh those too.
+            await runtimes[coordinator.entry.entry_id].stats.async_request_refresh()
 
     hass.services.async_register(
         DOMAIN,
