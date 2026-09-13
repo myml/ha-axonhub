@@ -183,6 +183,30 @@ class AxonHubClient:
         retry_on_auth: bool = True,
     ) -> dict[str, Any]:
         """Run a GraphQL operation against the admin endpoint."""
+        data, errors = await self.async_graphql_with_errors(
+            query, variables, timeout=timeout, retry_on_auth=retry_on_auth
+        )
+        if errors:
+            raise AxonHubApiError(_format_graphql_errors(errors))
+        return data
+
+    async def async_graphql_with_errors(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        timeout: int = REQUEST_TIMEOUT,
+        retry_on_auth: bool = True,
+    ) -> tuple[dict[str, Any], list[Any]]:
+        """Run a GraphQL operation, returning ``(data, errors)``.
+
+        GraphQL answers with partial ``data`` plus an ``errors`` list when a
+        single field fails. AxonHub does this, for example, for a channel whose
+        stored provider quota row has an empty `provider_type`: that channel's
+        ``providerQuotaStatus`` resolves to null while every other channel still
+        works. Both parts are returned so callers can keep the usable data and
+        report the failure per channel instead of dropping the whole response.
+        """
         if not self._token_is_usable():
             await self.async_sign_in()
 
@@ -204,7 +228,7 @@ class AxonHubClient:
             # The JWT expired or the account was changed; sign in once more.
             _LOGGER.debug("AxonHub rejected the cached token, signing in again")
             await self.async_sign_in()
-            return await self.async_graphql(
+            return await self.async_graphql_with_errors(
                 query, variables, timeout=timeout, retry_on_auth=False
             )
 
@@ -228,15 +252,16 @@ class AxonHubClient:
             )
             raise AxonHubApiError(message)
 
-        errors = payload.get("errors")
-        if errors:
+        errors = payload.get("errors") or []
+        data = payload.get("data")
+
+        if errors and not (isinstance(data, dict) and data):
             message = _format_graphql_errors(errors)
             _LOGGER.warning(
                 "AxonHub GraphQL error: %s — query sent: %s", message, _compact(query)
             )
             raise AxonHubApiError(message)
 
-        data = payload.get("data")
         if not isinstance(data, dict):
             message = (
                 "AxonHub GraphQL response did not contain data "
@@ -245,21 +270,31 @@ class AxonHubClient:
             _LOGGER.warning("%s — query sent: %s", message, _compact(query))
             raise AxonHubApiError(message)
 
-        return data
+        return data, errors
 
     async def async_get_channels(self) -> list[dict[str, Any]]:
-        """Return every enabled channel together with its provider quota status."""
-        data = await self.async_graphql(
+        """Return every enabled channel together with its provider quota status.
+
+        Channels whose ``providerQuotaStatus`` failed to resolve keep their
+        place in the list and carry the server side reason under
+        ``_quota_errors`` so the affected sensor can report it.
+        """
+        data, errors = await self.async_graphql_with_errors(
             CHANNEL_QUOTA_QUERY,
             {"input": {"where": {"statusIn": ["enabled"]}}},
         )
 
         connection = data.get("queryChannels") or {}
         channels: list[dict[str, Any]] = []
-        for edge in connection.get("edges") or []:
+        edge_indexes: list[int] = []
+        for index, edge in enumerate(connection.get("edges") or []):
             node = (edge or {}).get("node")
             if isinstance(node, dict):
                 channels.append(node)
+                edge_indexes.append(index)
+
+        if errors:
+            _attach_quota_errors(channels, edge_indexes, errors)
 
         return channels
 
@@ -360,6 +395,57 @@ def _format_graphql_errors(errors: Any) -> str:
             messages.append(str(error))
 
     return "; ".join(messages) or "AxonHub returned an unknown GraphQL error"
+
+
+def _quota_status_path_index(error: Any) -> int | None:
+    """Extract the edge index from a ``queryChannels`` error path.
+
+    AxonHub reports a failing channel as
+    ``["queryChannels", "edges", 12, "node", "providerQuotaStatus"]``.
+    """
+    if not isinstance(error, dict):
+        return None
+
+    path = error.get("path")
+    if not isinstance(path, list) or len(path) < 3:
+        return None
+    if path[0] != "queryChannels" or path[1] != "edges":
+        return None
+
+    index = path[2]
+    if isinstance(index, bool) or not isinstance(index, int):
+        return None
+    return index
+
+
+def _attach_quota_errors(
+    channels: list[dict[str, Any]], edge_indexes: list[int], errors: list[Any]
+) -> None:
+    """Attach each ``providerQuotaStatus`` failure to the channel it belongs to."""
+    unattributed: list[str] = []
+
+    for error in errors:
+        index = _quota_status_path_index(error)
+        message = _format_graphql_errors([error])
+
+        if index is not None and index in edge_indexes:
+            node = channels[edge_indexes.index(index)]
+            node.setdefault("_quota_errors", []).append(message)
+            _LOGGER.warning(
+                "AxonHub could not resolve the provider quota of channel %s: %s",
+                node.get("name") or node.get("id"),
+                message,
+            )
+            continue
+
+        unattributed.append(message)
+
+    if unattributed:
+        _LOGGER.warning(
+            "AxonHub reported errors that are not tied to a channel, continuing "
+            "without them: %s",
+            "; ".join(unattributed),
+        )
 
 
 def _compact(text: str, limit: int = 120) -> str:

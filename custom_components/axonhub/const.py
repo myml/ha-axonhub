@@ -20,20 +20,46 @@ MAX_SCAN_INTERVAL_SECONDS: Final = 24 * 60 * 60
 SERVICE_REFRESH_QUOTAS: Final = "refresh_quotas"
 ATTR_ENTRY_ID: Final = "entry_id"
 
-# Channels that AxonHub runs a provider quota checker for.
-# Keep in sync with internal/server/biz/provider_quota.go upstream.
-SUPPORTED_CHANNEL_TYPES: Final = frozenset(
+# Channel types AxonHub can run a provider quota check for. This list is only a
+# fallback, so that a freshly added channel shows up as "unknown" before its
+# first quota check produced data. Channels are otherwise detected by the
+# presence of `providerQuotaStatus`, which keeps working when AxonHub grows new
+# providers (the authoritative list lives in provider_quota.go upstream).
+QUOTA_CHANNEL_TYPES: Final = frozenset(
     {
         "claudecode",
         "codex",
+        "antigravity",
+        "xai_subscription",
         "github_copilot",
         "nanogpt",
         "nanogpt_responses",
+        "cline",
+        "opencode_go",
+        "opencode_go_anthropic",
+        "moonshot_coding",
+        "minimax",
+        "minimax_anthropic",
+        "zhipu",
+        "zhipu_anthropic",
+        "commandcode",
+        "commandcode_anthropic",
+        "zenmux",
+        "zenmux_responses",
+        "zenmux_anthropic",
+        "zenmux_gemini",
+        "ollama",
+        "wafer",
+        "synthetic",
+        "neuralwatt",
+        "apertis",
+        "charm_hyper",
+        "kimi_code",
     }
 )
 
-# `Channel.providerQuotaStatus` was added in AxonHub PR #669 and first shipped
-# in v0.8.7. Older instances reject the GraphQL query with "Cannot query field".
+# Documented for the "unsupported_version" error. `Channel.providerQuotaStatus`
+# was added in AxonHub PR #669 and first shipped in v0.8.7.
 MIN_AXONHUB_VERSION: Final = "v0.8.7"
 
 # AxonHub signs JWTs that stay valid for 7 days (see internal/server/biz/auth.go).

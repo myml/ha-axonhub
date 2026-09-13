@@ -144,6 +144,20 @@ Show how long is left in a reset window:
 
 ## How it works
 
+AxonHub decides what to report; this integration only translates it. Two payload
+shapes are supported, so both older and newer AxonHub releases work:
+
+- **AxonHub v1.0.0-beta8 and newer** store every provider's limits in a normalized
+  `quotaData._limits` array (`window`, `usageRatio`, provider-independent). The
+  integration prefers this, which is why it also covers providers it has no
+  bespoke parser for (Command Code, OpenCode Go, Cline, ZenMux, ...). Window
+  sensors are `sensor.<channel>_<window>_used` in percent, and `period_cost` /
+  `period_quota` from AxonHub show up as attributes.
+- **Older releases** (from v0.8.7, which introduced `Channel.providerQuotaStatus`)
+  store a per-provider raw payload instead (`windows`, `rate_limit`,
+  `quota_snapshots`, ...), which the integration parses per channel type.
+
+
 ```
 Home Assistant                        AxonHub
 ──────────────                        ───────
@@ -169,6 +183,7 @@ creating API keys. Per-provider `quotaData` shapes are documented in
 | No channel devices appear | The channel is not enabled, or its type is not one of the quota-enabled types listed above. Channels without a quota checker are ignored on purpose. |
 | Status stays `unknown` or window sensors are missing | AxonHub has not produced quota data yet (first check pending), or the provider check failed. Inspect the `error` attribute of the status sensor and the AxonHub logs. |
 | Entities disappear | The channel was disabled, deleted or changed to a type without a quota checker; the integration removes stale entities automatically. |
+| Status `unknown` and the `error` attribute mentions `unsupported provider quota type` | That AxonHub channel has a stored provider quota row with an empty `provider_type`, so AxonHub refuses to resolve it. The AxonHub web UI quota popover shows the same error. It is server side data, not an integration problem: the integration keeps running, marks only that channel unknown and names the reason. Fix it in AxonHub (see below). |
 
 ## Security notes
 

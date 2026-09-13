@@ -138,6 +138,41 @@ BROKEN_CHANNEL = {
     },
 }
 
+COMMANDCODE_CHANNEL = {
+    "id": "gid://axonhub/channel/7",
+    "name": "Command Code",
+    "type": "commandcode",
+    "providerQuotaStatus": {
+        "status": "available",
+        "ready": True,
+        "nextResetAt": "2026-02-01T00:00:00Z",
+        "nextCheckAt": "2026-01-01T00:20:00Z",
+        "quotaData": {
+            "subscription_status": "active",
+            "_limits": [
+                {
+                    "type": "subscription_cycle",
+                    "status": "warning",
+                    "usageRatio": 0.42,
+                    "ready": True,
+                    "window": "monthly",
+                    "nextResetAt": "2026-02-01T00:00:00Z",
+                    "periodStart": "2026-01-01T00:00:00Z",
+                    "periodCost": 1.25,
+                    "periodQuota": 5.0,
+                },
+                {
+                    "type": "image",
+                    "status": "available",
+                    "usageRatio": 0.1,
+                    "ready": True,
+                    "window": "monthly",
+                },
+            ],
+        },
+    },
+}
+
 UNSUPPORTED_CHANNEL = {
     "id": "gid://axonhub/channel/6",
     "name": "Plain Anthropic",
@@ -152,6 +187,7 @@ CHANNELS = [
     NANOGPT_CHANNEL,
     BROKEN_CHANNEL,
     UNSUPPORTED_CHANNEL,
+    COMMANDCODE_CHANNEL,
 ]
 
 
@@ -164,6 +200,7 @@ class MockAxonHub:
         self.token = "jwt-0"
         self.graphql_bodies: list[dict[str, Any]] = []
         self.graphql_error: str | None = None
+        self.partial_error: str | None = None
 
     async def sign_in(self, request: web.Request) -> web.Response:
         payload = await request.json()
@@ -194,15 +231,36 @@ class MockAxonHub:
             return web.json_response({"data": {"checkProviderQuotas": True}})
 
         if "queryChannels" in query:
-            return web.json_response(
-                {
-                    "data": {
-                        "queryChannels": {
-                            "edges": [{"node": item} for item in CHANNELS]
-                        }
+            channels = CHANNELS
+            extra_errors: list[dict[str, Any]] = []
+            if self.partial_error:
+                # AxonHub nulls the field that failed to resolve and reports the
+                # failure under `errors` with the path of the failing channel.
+                channels = [dict(item) for item in CHANNELS]
+                channels[2] = {**channels[2], "providerQuotaStatus": None}
+                extra_errors = [
+                    {
+                        "message": self.partial_error,
+                        "path": [
+                            "queryChannels",
+                            "edges",
+                            2,
+                            "node",
+                            "providerQuotaStatus",
+                        ],
+                    }
+                ]
+
+            payload: dict[str, Any] = {
+                "data": {
+                    "queryChannels": {
+                        "edges": [{"node": item} for item in channels],
                     }
                 }
-            )
+            }
+            if extra_errors:
+                payload["errors"] = extra_errors
+            return web.json_response(payload)
 
         return web.json_response({"errors": [{"message": "unknown query"}]})
 
@@ -370,7 +428,85 @@ async def test_trigger_quota_check(mock_axonhub: Any) -> None:
     assert "checkProviderQuotas" in state.graphql_bodies[-1]["query"]
 
 
+async def test_normalized_limits_are_used(mock_axonhub: Any) -> None:
+    """Providers without a bespoke parser still get sensors from quotaData._limits."""
+    import aiohttp
+
+    _, base_url = mock_axonhub
+
+    async with aiohttp.ClientSession() as session:
+        client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
+        nodes = await client.async_get_channels()
+
+    channel = next(
+        channel
+        for channel in (quota.build_channel_quota(node) for node in nodes)
+        if channel is not None and channel.channel_key == "channel_7"
+    )
+
+    # Command Code has no raw-payload parser; only _limits feeds these metrics.
+    assert sorted(metric.key for metric in channel.metrics) == [
+        "limit_monthly_image",
+        "limit_monthly_subscription_cycle",
+    ]
+
+    cycle = channel.metric("limit_monthly_subscription_cycle")
+    assert cycle is not None
+    assert cycle.value == 42.0
+    assert cycle.unit == "%"
+    # Same window twice, so names must be disambiguated by limit type.
+    assert cycle.name == "Monthly subscription_cycle used"
+    assert cycle.attributes["status"] == "warning"
+    assert cycle.attributes["next_reset_at"] == "2026-02-01T00:00:00Z"
+    assert cycle.attributes["period_cost"] == 1.25
+    assert cycle.attributes["period_quota"] == 5.0
+
+    image = channel.metric("limit_monthly_image")
+    assert image is not None
+    assert image.value == 10.0
+    assert image.name == "Monthly image used"
+
+
+async def test_partial_graphql_errors_are_tolerated(mock_axonhub: Any) -> None:
+    """One broken channel must not fail the whole poll.
+
+    AxonHub returns `data` plus an `errors` entry when a single channel's quota
+    resolver raises (for example an empty provider_type in the database).
+    """
+    import aiohttp
+
+    state, base_url = mock_axonhub
+    state.partial_error = (
+        "failed to read provider quota collection settings: "
+        'unsupported provider quota type: ""'
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
+        nodes = await client.async_get_channels()
+
+    # Data still arrives: the affected channel simply has no quota status.
+    assert len(nodes) == len(CHANNELS)
+    assert nodes[0]["id"] == "gid://axonhub/channel/1"
+
+    # The failure is attributed to the channel it belongs to (edge index 2).
+    assert nodes[1].get("_quota_errors") is None
+    assert nodes[2]["_quota_errors"] == [
+        "failed to read provider quota collection settings: "
+        'unsupported provider quota type: "" '
+        "(at queryChannels/edges/2/node/providerQuotaStatus)"
+    ]
+
+    # And the parser reports it as that channel's error, with no metrics.
+    broken = quota.build_channel_quota(nodes[2])
+    assert broken is not None
+    assert broken.status == "unknown"
+    assert broken.metrics == []
+    assert "unsupported provider quota type" in broken.error
+
+
 async def test_channel_quota_parsing(mock_axonhub: Any) -> None:
+    """Every provider payload is normalized into the expected metrics."""
     """Every provider payload is normalized into the expected metrics."""
     import aiohttp
 
@@ -393,6 +529,7 @@ async def test_channel_quota_parsing(mock_axonhub: Any) -> None:
         "channel_3",
         "channel_4",
         "channel_5",
+        "channel_7",
     ]
 
     claude = channels["channel_1"]

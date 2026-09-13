@@ -1,11 +1,18 @@
 """Translate AxonHub provider quota payloads into Home Assistant metrics.
 
-AxonHub stores one provider-specific JSON blob per channel
-(``Channel.providerQuotaStatus.quotaData``). The shape differs per provider, so
-this module normalizes each of them into a list of :class:`QuotaMetric` objects
-that the sensor platform can expose one-to-one.
+AxonHub stores one JSON blob per channel
+(``Channel.providerQuotaStatus.quotaData``). Since the "provider quota collection
+controls" work (AxonHub PR #2103, first released in v1.0.0-beta8) the backend
+normalizes every provider into a provider-agnostic list before storing it, under
+``quotaData._limits``::
 
-Reference (AxonHub repository, ``internal/server/biz/provider_quota/``):
+    {"type": "token", "status": "available", "usageRatio": 0.42, "ready": true,
+     "window": "5h", "nextResetAt": "...", "periodStart": "...",
+     "periodCost": 1.23, "periodQuota": 5.0}
+
+That is the primary source here, so every provider AxonHub knows about is
+covered without keeping a channel-type list in sync. The per-provider raw
+payloads are still parsed as a fallback for older instances:
 
 * ``claudecode_checker.go`` – ``windows.<5h|7d|overage>.{utilization,reset,status}``
   where ``utilization`` is a 0..1 ratio and ``reset`` a unix timestamp.
@@ -26,7 +33,7 @@ from typing import Any
 from homeassistant.const import PERCENTAGE
 from homeassistant.util import dt as dt_util
 
-from .const import SUPPORTED_CHANNEL_TYPES
+from .const import QUOTA_CHANNEL_TYPES
 
 STATUS_UNKNOWN = "unknown"
 
@@ -81,25 +88,38 @@ class ChannelQuota:
 def build_channel_quota(node: dict[str, Any]) -> ChannelQuota | None:
     """Build a :class:`ChannelQuota` from a ``queryChannels`` node.
 
-    Returns ``None`` for channels AxonHub does not run a quota checker for.
+    A channel is kept when AxonHub reports a quota status for it, whatever its
+    provider type. Channels whose type AxonHub has a quota checker for are also
+    kept before their first check has produced data, so they show up as
+    ``unknown`` instead of appearing only later.
     """
-    channel_type = str(node.get("type") or "").lower()
-    if channel_type not in SUPPORTED_CHANNEL_TYPES:
-        return None
-
     channel_id = str(node.get("id") or "")
     if not channel_id:
         return None
 
-    status_object = node.get("providerQuotaStatus")
-    if not isinstance(status_object, dict):
-        status_object = {}
+    channel_type = str(node.get("type") or "").lower()
+
+    raw_status = node.get("providerQuotaStatus")
+    has_status = isinstance(raw_status, dict)
+
+    # Errors AxonHub reported for this channel's `providerQuotaStatus` field,
+    # attached by the client when the field failed to resolve.
+    field_errors = _as_text_list(node.get("_quota_errors"))
+
+    if not has_status and not field_errors and channel_type not in QUOTA_CHANNEL_TYPES:
+        return None
+
+    status_object: dict[str, Any] = raw_status if has_status else {}
 
     quota_data = status_object.get("quotaData")
     if not isinstance(quota_data, dict):
         quota_data = {}
 
     status = str(status_object.get("status") or STATUS_UNKNOWN).lower()
+
+    error = _as_text(quota_data.get("error"))
+    if not error and field_errors:
+        error = "; ".join(field_errors)
 
     return ChannelQuota(
         channel_id=channel_id,
@@ -112,7 +132,7 @@ def build_channel_quota(node: dict[str, Any]) -> ChannelQuota | None:
         next_check_at=_parse_time(status_object.get("nextCheckAt")),
         quota_data=quota_data,
         metrics=build_metrics(channel_type, quota_data),
-        error=_as_text(quota_data.get("error")),
+        error=error,
     )
 
 
@@ -130,7 +150,16 @@ def channel_key(channel_id: str) -> str:
 
 
 def build_metrics(channel_type: str, quota_data: dict[str, Any]) -> list[QuotaMetric]:
-    """Build the provider specific metric list."""
+    """Build the metric list for one channel.
+
+    The normalized ``_limits`` array is provider agnostic, so it is preferred;
+    the per-provider raw payloads remain as a fallback for older AxonHub
+    versions that do not store it.
+    """
+    normalized = _limits_metrics(quota_data)
+    if normalized:
+        return normalized
+
     if channel_type == "claudecode":
         return _claudecode_metrics(quota_data)
     if channel_type == "codex":
@@ -140,6 +169,97 @@ def build_metrics(channel_type: str, quota_data: dict[str, Any]) -> list[QuotaMe
     if channel_type in ("nanogpt", "nanogpt_responses"):
         return _nanogpt_metrics(quota_data)
     return []
+
+
+# Friendly names for the normalized limit windows AxonHub reports. Anything not
+# listed here is rendered from its raw value.
+_WINDOW_LABELS = {
+    "5h": "5h window",
+    "7d": "7d window",
+    "30d": "30d window",
+    "daily": "Daily",
+    "weekly": "Weekly",
+    "monthly": "Monthly",
+    "cycle": "Billing cycle",
+    "rolling": "Rolling window",
+    "interval": "Interval window",
+    "overage": "Overage",
+}
+
+
+def _limits_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
+    """Build metrics from AxonHub's normalized ``quotaData._limits`` array.
+
+    ``usageRatio`` is a 0..1 ratio, so it is exposed as a percentage. ``key``
+    combines the window and the limit type because providers may report several
+    limits of different types in the same window (for example daily tokens and
+    daily images).
+    """
+    raw_limits = quota_data.get("_limits")
+    if not isinstance(raw_limits, list):
+        return []
+
+    entries: list[tuple[str, str, str, dict[str, Any], float | None]] = []
+    for raw in raw_limits:
+        if not isinstance(raw, dict):
+            continue
+
+        window = _as_text(raw.get("window")) or ""
+        limit_type = _as_text(raw.get("type")) or ""
+        if not window and not limit_type:
+            continue
+
+        label = _WINDOW_LABELS.get(window.lower())
+        if label is None:
+            label = window.replace("_", " ").strip().title() if window else limit_type.title()
+
+        entries.append((window, limit_type, label, raw, _as_float(raw.get("usageRatio"))))
+
+    # Disambiguate labels when the same window carries several limit types.
+    label_counts: dict[str, int] = {}
+    for _window, _type, label, _raw, _ratio in entries:
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    metrics: list[QuotaMetric] = []
+    used_keys: set[str] = set()
+    for window, limit_type, label, raw, ratio in entries:
+        name = label
+        if label_counts[label] > 1 and limit_type:
+            name = f"{label} {limit_type}"
+
+        ratio = _as_float(raw.get("usageRatio"))
+        attributes: dict[str, Any] = {
+            "window": window or None,
+            "type": limit_type or None,
+            "status": _as_text(raw.get("status")),
+            "ready": raw.get("ready") if isinstance(raw.get("ready"), bool) else None,
+            "next_reset_at": _as_text(raw.get("nextResetAt")),
+            "period_start": _as_text(raw.get("periodStart")),
+        }
+        period_cost = _as_float(raw.get("periodCost"))
+        if period_cost is not None:
+            attributes["period_cost"] = period_cost
+        period_quota = _as_float(raw.get("periodQuota"))
+        if period_quota is not None:
+            attributes["period_quota"] = period_quota
+
+        key = f"limit_{_slug(window)}_{_slug(limit_type)}"
+        if key in used_keys:
+            key = f"{key}_{len(metrics)}"
+        used_keys.add(key)
+
+        metrics.append(
+            QuotaMetric(
+                key=key,
+                name=f"{name} used",
+                value=_round(ratio * 100) if ratio is not None else None,
+                unit=PERCENTAGE,
+                icon="mdi:percent",
+                attributes={k: v for k, v in attributes.items() if v is not None},
+            )
+        )
+
+    return metrics
 
 
 _CLAUDE_WINDOW_LABELS = {
@@ -397,6 +517,18 @@ def _as_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _as_text_list(value: Any) -> list[str]:
+    """Coerce a JSON value to a list of non-empty strings."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        text = _as_text(item)
+        if text:
+            result.append(text)
+    return result
 
 
 def _round(value: float | None, digits: int = 1) -> float | None:
