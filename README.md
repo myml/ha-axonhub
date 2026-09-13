@@ -13,6 +13,9 @@
 
 ## 前置条件
 
+- **AxonHub v0.8.7 或更高版本。** `Channel.providerQuotaStatus` 自
+  [PR #669](https://github.com/looplj/axonhub/pull/669) 引入，更早的版本不存在该字段，
+  集成会明确提示需要升级。
 - AxonHub 至少有一个已启用、类型为 `claudecode`、`codex`、`github_copilot`、
   `nanogpt` 或 `nanogpt_responses` 的渠道。
 - 一个可以读取渠道的 AxonHub 账号：owner 账号，或拥有 `read:channels` 权限的角色/成员。
@@ -164,6 +167,8 @@ POST /admin/graphql            ──▶    queryChannels → providerQuotaStatu
 | 添加集成时报 `invalid_auth` | 邮箱或密码错误，或账号未激活。 |
 | 报 `cannot_connect` | 地址/端口不对，Home Assistant 访问不到 AxonHub，或 TLS 校验失败。自签名证书请关闭"校验 SSL 证书"。 |
 | 报 `insufficient_permissions` | 该账号没有读取渠道的权限。请使用 owner 账号，或授予 `read:channels` 权限。 |
+| 报 `unsupported_version` | 该实例低于 AxonHub v0.8.7，没有供应商额度接口。请升级 AxonHub。 |
+| 报 `api_error` 并附带文字 | 表单会显示 AxonHub 返回的原始错误，同一内容也会以 WARNING 级别写入日志（**设置 → 系统 → 日志**）。 |
 | 没有任何渠道设备 | 渠道未启用，或类型不属于上面列出的可查额度类型。没有额度检查器的渠道会被有意忽略。 |
 | 状态一直是 `unknown`，或缺少窗口传感器 | AxonHub 还没产出额度数据（首次检查未执行），或供应商检查失败。请看状态实体的 `error` 属性和 AxonHub 日志。 |
 | 实体消失 | 渠道被禁用、删除，或类型改成了没有额度检查器的类型；集成会自动移除过期实体。 |

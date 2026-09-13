@@ -42,6 +42,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL_SECONDS,
+    MIN_AXONHUB_VERSION,
     MIN_SCAN_INTERVAL_SECONDS,
 )
 
@@ -75,6 +76,7 @@ class AxonHubConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the flow."""
         self._reauth_entry: ConfigEntry | None = None
+        self._placeholders: dict[str, str] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -102,6 +104,7 @@ class AxonHubConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=self._credentials_schema(user_input),
             errors=errors,
+            description_placeholders=self._placeholders,
         )
 
     async def async_step_reauth(
@@ -147,7 +150,10 @@ class AxonHubConfigFlow(ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
-            description_placeholders={"url": entry.data.get(CONF_BASE_URL, "")},
+            description_placeholders={
+                "url": entry.data.get(CONF_BASE_URL, ""),
+                **self._placeholders,
+            },
         )
 
     @staticmethod
@@ -177,7 +183,11 @@ class AxonHubConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def _async_validate(self, data: dict[str, Any]) -> dict[str, str]:
-        """Sign in and read the channel list to validate the setup."""
+        """Sign in and read the channel list to validate the setup.
+
+        Returns the errors to show on the form; any extra text to render is
+        stored in ``self._placeholders``.
+        """
         session = async_get_clientsession(
             self.hass, verify_ssl=bool(data.get(CONF_VERIFY_SSL, True))
         )
@@ -188,19 +198,45 @@ class AxonHubConfigFlow(ConfigFlow, domain=DOMAIN):
             data[CONF_PASSWORD],
         )
 
+        self._placeholders = {"url": data[CONF_BASE_URL]}
+
         try:
             await client.async_sign_in()
             await client.async_get_channels()
         except AxonHubAuthError as err:
-            _LOGGER.debug("AxonHub authentication failed: %s", err)
+            _LOGGER.warning(
+                "AxonHub at %s rejected the credentials: %s",
+                data[CONF_BASE_URL],
+                err,
+            )
             return {"base": "invalid_auth"}
         except AxonHubConnectionError as err:
-            _LOGGER.debug("AxonHub is not reachable: %s", err)
+            _LOGGER.warning("AxonHub at %s is not reachable: %s", data[CONF_BASE_URL], err)
+            self._placeholders["error"] = str(err)
             return {"base": "cannot_connect"}
         except AxonHubApiError as err:
-            _LOGGER.debug("AxonHub API error during validation: %s", err)
-            if "permission" in str(err).lower():
+            message = str(err)
+            _LOGGER.warning(
+                "AxonHub at %s returned an API error: %s", data[CONF_BASE_URL], message
+            )
+            self._placeholders["error"] = message
+
+            lowered = message.lower()
+            if "permission" in lowered or "forbidden" in lowered:
                 return {"base": "insufficient_permissions"}
+            if any(
+                marker in lowered
+                for marker in (
+                    "cannot query field",
+                    "unknown field",
+                    "unknown argument",
+                    "is not defined by type",
+                )
+            ):
+                # The instance predates the provider quota API (AxonHub v0.8.7),
+                # so GraphQL rejects the query itself.
+                self._placeholders["minimum_version"] = MIN_AXONHUB_VERSION
+                return {"base": "unsupported_version"}
             return {"base": "api_error"}
 
         return {}

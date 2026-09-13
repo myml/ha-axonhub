@@ -18,11 +18,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.axonhub.api import AxonHubAuthError, AxonHubClient
+from custom_components.axonhub.api import (
+    AxonHubApiError,
+    AxonHubAuthError,
+    AxonHubClient,
+)
 from custom_components.axonhub.const import (
     CONF_BASE_URL,
     CONF_VERIFY_SSL,
     DOMAIN,
+    MIN_AXONHUB_VERSION,
     SERVICE_REFRESH_QUOTAS,
 )
 
@@ -117,6 +122,7 @@ class PatchedClient:
         self.channel_reads = 0
         self.checks = 0
         self.fail_auth = False
+        self.api_error: str | None = None
 
 
 @pytest.fixture
@@ -128,11 +134,15 @@ def patched_client(monkeypatch: pytest.MonkeyPatch) -> PatchedClient:
         recorder.signins += 1
         if recorder.fail_auth:
             raise AxonHubAuthError("Invalid email or password")
+        if recorder.api_error:
+            raise AxonHubApiError(recorder.api_error)
 
     async def _get_channels(self) -> list[dict[str, Any]]:
         recorder.channel_reads += 1
         if recorder.fail_auth:
             raise AxonHubAuthError("Invalid email or password")
+        if recorder.api_error:
+            raise AxonHubApiError(recorder.api_error)
         return CHANNELS
 
     async def _trigger(self) -> None:
@@ -212,6 +222,56 @@ async def test_config_flow_rejects_bad_credentials(
 
     assert result["type"] == "form"
     assert result["errors"] == {"base": "invalid_auth"}
+
+
+async def test_config_flow_reports_graphql_error(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """A GraphQL failure shows the real AxonHub message instead of a bare error."""
+    patched_client.api_error = "AxonHub GraphQL error: boom"
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_BASE_URL: BASE_URL,
+            CONF_EMAIL: "me@example.com",
+            CONF_PASSWORD: "secret",
+            CONF_VERIFY_SSL: True,
+        },
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "api_error"}
+    assert result["description_placeholders"]["error"] == "AxonHub GraphQL error: boom"
+
+
+async def test_config_flow_detects_unsupported_axonhub(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """An AxonHub without the quota API is reported as an upgrade problem."""
+    patched_client.api_error = (
+        'Cannot query field "providerQuotaStatus" on type "Channel".'
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_BASE_URL: BASE_URL,
+            CONF_EMAIL: "me@example.com",
+            CONF_PASSWORD: "secret",
+            CONF_VERIFY_SSL: True,
+        },
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "unsupported_version"}
+    assert result["description_placeholders"]["minimum_version"] == MIN_AXONHUB_VERSION
 
 
 async def test_setup_creates_quota_entities(

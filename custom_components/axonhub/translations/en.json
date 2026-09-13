@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to AxonHub",
-        "description": "Sign in with an AxonHub account that is allowed to read channels. The owner account works out of the box.",
+        "description": "Sign in with an AxonHub account that is allowed to read channels. The owner account works out of the box. Requires AxonHub v0.8.7 or newer.",
         "data": {
           "base_url": "AxonHub URL",
           "email": "Email",
@@ -23,9 +23,10 @@
     "error": {
       "invalid_url": "The AxonHub URL is not valid",
       "invalid_auth": "Invalid email or password",
-      "cannot_connect": "Failed to connect to AxonHub",
-      "api_error": "AxonHub returned an error",
-      "insufficient_permissions": "This account is not allowed to read channels"
+      "cannot_connect": "Failed to connect to AxonHub: {error}",
+      "api_error": "AxonHub returned an error: {error}",
+      "insufficient_permissions": "This account is not allowed to read channels",
+      "unsupported_version": "This AxonHub instance does not expose the provider quota API. AxonHub {minimum_version} or newer is required — please upgrade AxonHub."
     },
     "abort": {
       "already_configured": "This AxonHub instance is already configured",

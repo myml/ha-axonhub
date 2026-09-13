@@ -10,6 +10,11 @@ AxonHub exposes two authenticated surfaces:
 
 This module therefore signs in with the credentials stored in the config entry,
 caches the JWT and transparently re-authenticates when it expires.
+
+Every failure carries the response AxonHub actually sent (GraphQL error
+messages, the HTTP status and a snippet of a non-JSON body) and is logged at
+WARNING level, so a misconfiguration is diagnosable from the Home Assistant log
+instead of a bare "AxonHub returned an error".
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from http import HTTPStatus
+import json as json_module
 import logging
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -35,6 +41,9 @@ _LOGGER = logging.getLogger(__name__)
 
 SIGN_IN_PATH = "/admin/auth/signin"
 GRAPHQL_PATH = "/admin/graphql"
+
+# How much of an unexpected response body to quote in an error message.
+_BODY_SNIPPET_LIMIT = 200
 
 # The same query the AxonHub web UI uses to render provider quota badges.
 # `queryChannels` returns every channel unpaginated as long as neither `first`
@@ -132,7 +141,7 @@ class AxonHubClient:
 
     async def async_sign_in(self) -> None:
         """Authenticate against AxonHub and cache the returned JWT."""
-        status, payload = await self._async_request(
+        status, payload, raw, content_type = await self._async_request(
             "POST",
             SIGN_IN_PATH,
             json={"email": self._email, "password": self._password},
@@ -141,12 +150,18 @@ class AxonHubClient:
 
         if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
             raise AxonHubAuthError("AxonHub rejected the email or password")
+
         if status >= HTTPStatus.BAD_REQUEST:
-            raise AxonHubApiError(f"AxonHub sign-in failed with HTTP {status}")
+            raise AxonHubApiError(
+                f"AxonHub sign-in failed ({self._describe(status, payload, raw, content_type)})"
+            )
 
         token = payload.get("token") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
-            raise AxonHubApiError("AxonHub sign-in response did not contain a token")
+            raise AxonHubApiError(
+                "AxonHub sign-in response did not contain a token "
+                f"({self._describe(status, payload, raw, content_type)})"
+            )
 
         self._token = token
         self._token_obtained_at = dt_util.utcnow()
@@ -175,7 +190,7 @@ class AxonHubClient:
         if variables:
             body["variables"] = variables
 
-        status, payload = await self._async_request(
+        status, payload, raw, content_type = await self._async_request(
             "POST",
             GRAPHQL_PATH,
             json=body,
@@ -185,9 +200,7 @@ class AxonHubClient:
 
         if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
             if not retry_on_auth:
-                raise AxonHubAuthError(
-                    "AxonHub rejected the AxonHub account credentials"
-                )
+                raise AxonHubAuthError("AxonHub rejected the account credentials")
             # The JWT expired or the account was changed; sign in once more.
             _LOGGER.debug("AxonHub rejected the cached token, signing in again")
             await self.async_sign_in()
@@ -196,18 +209,41 @@ class AxonHubClient:
             )
 
         if status >= HTTPStatus.BAD_REQUEST:
-            raise AxonHubApiError(f"AxonHub GraphQL request failed with HTTP {status}")
+            message = (
+                "AxonHub rejected the GraphQL request "
+                f"({self._describe(status, payload, raw, content_type)})"
+            )
+            _LOGGER.warning("%s — query sent: %s", message, _compact(query))
+            raise AxonHubApiError(message)
 
         if not isinstance(payload, dict):
-            raise AxonHubApiError("AxonHub returned an unexpected GraphQL response")
+            message = (
+                "AxonHub returned a response that is not GraphQL JSON "
+                f"({self._describe(status, payload, raw, content_type)})"
+            )
+            _LOGGER.warning(
+                "%s — check that the URL points at AxonHub itself and not at a "
+                "reverse proxy error page",
+                message,
+            )
+            raise AxonHubApiError(message)
 
         errors = payload.get("errors")
         if errors:
-            raise AxonHubApiError(_format_graphql_errors(errors))
+            message = _format_graphql_errors(errors)
+            _LOGGER.warning(
+                "AxonHub GraphQL error: %s — query sent: %s", message, _compact(query)
+            )
+            raise AxonHubApiError(message)
 
         data = payload.get("data")
         if not isinstance(data, dict):
-            raise AxonHubApiError("AxonHub GraphQL response did not contain data")
+            message = (
+                "AxonHub GraphQL response did not contain data "
+                f"({self._describe(status, payload, raw, content_type)})"
+            )
+            _LOGGER.warning("%s — query sent: %s", message, _compact(query))
+            raise AxonHubApiError(message)
 
         return data
 
@@ -243,8 +279,8 @@ class AxonHubClient:
         json: dict[str, Any],
         headers: dict[str, str] | None = None,
         timeout: int = REQUEST_TIMEOUT,
-    ) -> tuple[int, Any]:
-        """Perform an HTTP request and return ``(status, decoded_json)``."""
+    ) -> tuple[int, Any, str, str]:
+        """Perform a request and return ``(status, json, body, content_type)``."""
         url = f"{self._base_url}{path}"
         try:
             async with self._session.request(
@@ -255,19 +291,54 @@ class AxonHubClient:
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as response:
                 status = response.status
-                try:
-                    payload: Any = await response.json(content_type=None)
-                except ValueError:
-                    payload = None
+                content_type = response.headers.get("Content-Type", "")
+                raw = await response.text()
         except asyncio.TimeoutError as err:
             raise AxonHubConnectionError(f"Timed out talking to {url}") from err
         except aiohttp.ClientError as err:
             raise AxonHubConnectionError(f"Error talking to {url}: {err}") from err
 
+        payload: Any = None
+        if raw:
+            try:
+                payload = json_module.loads(raw)
+            except ValueError:
+                payload = None
+
         if status >= HTTPStatus.BAD_REQUEST:
             _LOGGER.debug("AxonHub %s returned HTTP %s", path, status)
 
-        return status, payload
+        return status, payload, raw, content_type
+
+    @staticmethod
+    def _describe(
+        status: int, payload: Any, raw: str, content_type: str
+    ) -> str:
+        """Build a diagnosable description of an unexpected response."""
+        detail = _extract_error_message(payload)
+        if detail:
+            return detail
+        if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+            return f"HTTP {status}"
+        if raw:
+            kind = f", {content_type}" if content_type else ""
+            return f"HTTP {status}{kind}: {_compact(raw, _BODY_SNIPPET_LIMIT)}"
+        return f"HTTP {status}"
+
+
+def _extract_error_message(payload: Any) -> str | None:
+    """Pull a human readable message out of an AxonHub error response."""
+    if isinstance(payload, dict):
+        errors = payload.get("errors")
+        if errors:
+            return _format_graphql_errors(errors)
+        for key in ("error", "message", "detail", "error_description"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(payload, list) and payload:
+        return _format_graphql_errors(payload)
+    return None
 
 
 def _format_graphql_errors(errors: Any) -> str:
@@ -280,8 +351,20 @@ def _format_graphql_errors(errors: Any) -> str:
     messages = []
     for error in errors:
         if isinstance(error, dict):
-            messages.append(str(error.get("message") or error))
+            message = str(error.get("message") or error)
+            path = error.get("path")
+            if isinstance(path, list) and path:
+                message = f"{message} (at {'/'.join(str(part) for part in path)})"
+            messages.append(message)
         else:
             messages.append(str(error))
 
     return "; ".join(messages) or "AxonHub returned an unknown GraphQL error"
+
+
+def _compact(text: str, limit: int = 120) -> str:
+    """Collapse whitespace and truncate for log/error messages."""
+    collapsed = " ".join(str(text).split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return f"{collapsed[:limit]}…"

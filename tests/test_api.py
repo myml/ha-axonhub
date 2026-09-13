@@ -298,6 +298,54 @@ async def test_invalid_credentials_raise_auth_error(mock_axonhub: Any) -> None:
             await client.async_get_channels()
 
 
+async def test_unsupported_field_is_reported_verbatim(mock_axonhub: Any) -> None:
+    """A schema mismatch (old AxonHub) keeps the GraphQL message."""
+    import aiohttp
+
+    state, base_url = mock_axonhub
+    state.graphql_error = 'Cannot query field "providerQuotaStatus" on type "Channel".'
+
+    async with aiohttp.ClientSession() as session:
+        client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
+        with pytest.raises(AxonHubApiError) as err:
+            await client.async_get_channels()
+
+    assert "Cannot query field" in str(err.value)
+
+
+async def test_html_response_is_reported_with_status_and_body(
+    socket_enabled: None,
+) -> None:
+    """A non-JSON answer (reverse proxy page) is quoted in the error."""
+    import aiohttp
+
+    async def html_handler(request: web.Request) -> web.Response:
+        return web.Response(
+            text="<html><body>502 Bad Gateway</body></html>",
+            content_type="text/html",
+            status=502,
+        )
+
+    app = web.Application()
+    app.router.add_post("/admin/auth/signin", html_handler)
+
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            client = AxonHubClient(
+                session, f"http://127.0.0.1:{server.port}", EMAIL, PASSWORD
+            )
+            with pytest.raises(AxonHubApiError) as err:
+                await client.async_sign_in()
+    finally:
+        await server.close()
+
+    message = str(err.value)
+    assert "502" in message
+    assert "Bad Gateway" in message
+
+
 async def test_unreachable_host_raises_connection_error(socket_enabled: None) -> None:
     """A dead endpoint raises AxonHubConnectionError, not a raw aiohttp error."""
     import aiohttp

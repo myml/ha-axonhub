@@ -15,6 +15,9 @@ provider API calls.
 
 ## Requirements
 
+- **AxonHub v0.8.7 or newer.** `Channel.providerQuotaStatus` (added in
+  [PR #669](https://github.com/looplj/axonhub/pull/669)) only exists from that release on;
+  older instances reject the query and the integration tells you to upgrade.
 - AxonHub with at least one enabled channel of type `claudecode`, `codex`,
   `github_copilot`, `nanogpt` or `nanogpt_responses`.
 - An AxonHub account allowed to read channels: the owner account, or a
@@ -161,6 +164,8 @@ creating API keys. Per-provider `quotaData` shapes are documented in
 | `invalid_auth` while adding the integration | Wrong email or password, or the account is not activated. |
 | `cannot_connect` | Wrong URL/port, AxonHub not reachable from Home Assistant, or a TLS failure. Disable *Verify SSL certificate* for self-signed certificates. |
 | `insufficient_permissions` | The account cannot read channels. Use the owner account or grant the `read:channels` scope. |
+| `unsupported_version` | The instance is older than AxonHub v0.8.7 and has no provider quota API. Upgrade AxonHub. |
+| `api_error` with a message | The form shows the exact error AxonHub returned; the same text is logged at WARNING level (`Settings → System → Logs`). |
 | No channel devices appear | The channel is not enabled, or its type is not one of the quota-enabled types listed above. Channels without a quota checker are ignored on purpose. |
 | Status stays `unknown` or window sensors are missing | AxonHub has not produced quota data yet (first check pending), or the provider check failed. Inspect the `error` attribute of the status sensor and the AxonHub logs. |
 | Entities disappear | The channel was disabled, deleted or changed to a type without a quota checker; the integration removes stale entities automatically. |

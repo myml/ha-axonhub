@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "连接 AxonHub",
-        "description": "请使用可以读取渠道的 AxonHub 账号登录，owner 账号开箱即用。",
+        "description": "请使用可以读取渠道的 AxonHub 账号登录，owner 账号开箱即用。需要 AxonHub v0.8.7 或更高版本。",
         "data": {
           "base_url": "AxonHub 地址",
           "email": "邮箱",
@@ -23,9 +23,10 @@
     "error": {
       "invalid_url": "AxonHub 地址无效",
       "invalid_auth": "邮箱或密码错误",
-      "cannot_connect": "无法连接 AxonHub",
-      "api_error": "AxonHub 返回了错误",
-      "insufficient_permissions": "该账号没有读取渠道的权限"
+      "cannot_connect": "无法连接 AxonHub：{error}",
+      "api_error": "AxonHub 返回错误：{error}",
+      "insufficient_permissions": "该账号没有读取渠道的权限",
+      "unsupported_version": "该 AxonHub 实例没有提供供应商额度接口，需要 AxonHub {minimum_version} 或更高版本，请先升级 AxonHub。"
     },
     "abort": {
       "already_configured": "该 AxonHub 实例已经配置过了",

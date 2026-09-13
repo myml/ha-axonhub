@@ -32,6 +32,10 @@ SUPPORTED_CHANNEL_TYPES: Final = frozenset(
     }
 )
 
+# `Channel.providerQuotaStatus` was added in AxonHub PR #669 and first shipped
+# in v0.8.7. Older instances reject the GraphQL query with "Cannot query field".
+MIN_AXONHUB_VERSION: Final = "v0.8.7"
+
 # AxonHub signs JWTs that stay valid for 7 days (see internal/server/biz/auth.go).
 # Re-authenticate before that instead of waiting for a 401.
 TOKEN_LIFETIME: Final = timedelta(days=7)
