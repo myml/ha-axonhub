@@ -1,123 +1,113 @@
 # AxonHub for Home Assistant
 
-A Home Assistant custom integration that surfaces the **provider quota** AxonHub
-already tracks for each channel — the subscription windows of **Claude Code**,
-**Codex**, **GitHub Copilot** and **NanoGPT** — as Home Assistant entities, so you
-can watch "how much quota is left" on a dashboard or automate on it.
+[English](README.en.md) | **简体中文**
 
-The integration only reads AxonHub's *cached* quota state. It never talks to the
-upstream AI providers itself, so a short polling interval does not cost you any
-provider API calls.
+把 AxonHub 已经采集的**渠道供应商额度**——Claude Code、Codex、GitHub Copilot、NanoGPT
+的订阅窗口——变成 Home Assistant 实体，这样你就能在仪表盘上看到"还剩多少额度"，
+或者基于额度做自动化。
 
-> AxonHub itself lives at [looplj/axonhub](https://github.com/looplj/axonhub).
+集成只读取 AxonHub **缓存**的额度状态，自己不会去请求上游 AI 供应商，因此轮询间隔调短
+也不会消耗供应商的 API 调用。
 
-## Requirements
+> AxonHub 本体：[looplj/axonhub](https://github.com/looplj/axonhub)
 
-- AxonHub with at least one enabled channel of type `claudecode`, `codex`,
-  `github_copilot`, `nanogpt` or `nanogpt_responses`.
-- An AxonHub account allowed to read channels: the owner account, or a
-  role/membership holding the `read:channels` scope.
-- Home Assistant 2024.12 or newer.
+## 前置条件
 
-Quota data is collected by AxonHub's own background check, which runs every
-`provider_quota.check_interval` (20 minutes by default, see the
-[AxonHub configuration reference](https://github.com/looplj/axonhub/blob/main/config.example.yml)).
-Entities show the last known state until that check runs again.
+- AxonHub 至少有一个已启用、类型为 `claudecode`、`codex`、`github_copilot`、
+  `nanogpt` 或 `nanogpt_responses` 的渠道。
+- 一个可以读取渠道的 AxonHub 账号：owner 账号，或拥有 `read:channels` 权限的角色/成员。
+- Home Assistant 2024.12 或更高版本。
 
-## Installation
+额度数据由 AxonHub 自己的后台任务采集，默认每 `provider_quota.check_interval`（20 分钟）
+执行一次。在下次检查之前，实体显示的是最近一次的状态。
 
-### HACS (custom repository)
+## 安装
 
-1. In Home Assistant open **HACS → Integrations**.
-2. Click the **⋮** menu → **Custom repositories**.
-3. Add `https://github.com/myml/ha-axonhub` with category **Integration**.
-4. Install **AxonHub** and restart Home Assistant.
+### HACS（自定义仓库）
 
-### Manual
+1. 打开 **HACS → 集成**。
+2. 点击右上角 **⋮** 菜单 → **自定义仓库**。
+3. 添加 `https://github.com/myml/ha-axonhub`，类别选择 **Integration**。
+4. 安装 **AxonHub**，然后重启 Home Assistant。
 
-Copy the `custom_components/axonhub` directory into your Home Assistant
-configuration directory and restart:
+### 手动安装
 
 ```bash
 cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
 ```
 
-## Configuration
+重启 Home Assistant。
 
-Go to **Settings → Devices & Services → Add Integration → AxonHub** and fill in:
+## 配置
 
-| Field | Description |
-|-------|-------------|
-| AxonHub URL | Base URL of your instance, for example `http://homeassistant.local:8090`. A scheme is optional (`http://` is assumed). |
-| Email / Password | Credentials of an account allowed to read channels. |
-| Verify SSL certificate | Turn off for self-signed certificates. |
+进入 **设置 → 设备与服务 → 添加集成 → AxonHub**，填写：
 
-The integration signs in through `POST /admin/auth/signin`, caches the JWT that
-AxonHub issues (valid for 7 days) and re-authenticates automatically — proactively
-before it expires and reactively if AxonHub rejects it. If the credentials stop
-working, Home Assistant starts a re-authentication flow instead of failing silently.
+| 字段 | 说明 |
+|------|------|
+| AxonHub 地址 | 实例的根地址，例如 `http://homeassistant.local:8090`。可以不写协议（默认按 `http://` 处理）。 |
+| 邮箱 / 密码 | 有权读取渠道的账号凭据。 |
+| 校验 SSL 证书 | 使用自签名证书时关闭。 |
 
-### Options
+集成通过 `POST /admin/auth/signin` 登录，缓存 AxonHub 签发的 JWT（有效期 7 天）并自动
+重新认证：过期前主动续期，被拒绝时（例如改过密码）立刻重新登录。凭据失效时 Home Assistant
+会启动重新认证流程，而不是静默失败。
 
-**Settings → Devices & Services → AxonHub → Configure**:
+### 选项
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| Poll interval | 300 s | How often Home Assistant reads the cached quota state. Minimum 30 s. |
-| Verify SSL certificate | on | TLS verification for the AxonHub URL. |
+**设置 → 设备与服务 → AxonHub → 配置**：
 
-## Entities
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| 轮询间隔 | 300 秒 | 读取缓存额度状态的频率，最小 30 秒。 |
+| 校验 SSL 证书 | 开启 | 访问 AxonHub 时是否校验 TLS 证书。 |
 
-Every quota-enabled channel becomes its own Home Assistant device named after the
-channel.
+## 实体
 
-| Entity | Description |
-|--------|-------------|
-| `sensor.<channel>_quota_status` | Overall status: `available`, `warning`, `exhausted` or `unknown`. |
-| `sensor.<channel>_next_quota_reset` | Timestamp of the next reset of the primary quota window. |
-| `binary_sensor.<channel>_quota_ready` | `on` while the channel can still serve requests (status `available` or `warning`). |
+每个启用额度检查的渠道会成为一个独立的 Home Assistant 设备（名称即渠道名）。
 
-Provider specific window sensors:
+| 实体 | 说明 |
+|------|------|
+| `sensor.<渠道>_quota_status` | 总体状态：`available`、`warning`、`exhausted` 或 `unknown`。 |
+| `sensor.<渠道>_next_quota_reset` | 主要额度窗口的下次重置时间。 |
+| `binary_sensor.<渠道>_quota_ready` | 渠道是否仍可服务（状态为 `available` 或 `warning` 时为 `on`）。 |
 
-| Provider | Entities | Meaning |
-|----------|----------|---------|
-| Claude Code | `sensor.<channel>_5h_window_used`, `sensor.<channel>_7d_window_used`, `sensor.<channel>_overage_window_used` | Utilization of the 5-hour, 7-day and overage rate limit windows, in percent. |
-| Codex | `sensor.<channel>_primary_window_used`, `sensor.<channel>_secondary_window_used` | Utilization of the primary and secondary rate limit windows, in percent. |
-| GitHub Copilot | `sensor.<channel>_<quota>_remaining` (for example `sensor.copilot_premium_interactions_remaining`) | Remaining percentage per quota snapshot. Accounts without snapshots get the value computed from `limited_user_quotas` / `total_quotas`. |
-| NanoGPT | `sensor.<channel>_weekly_input_tokens_used`, `sensor.<channel>_daily_input_tokens_used`, `sensor.<channel>_daily_images_used` | Utilization of each subscription window, in percent. |
+各供应商的窗口传感器：
 
-Notes:
+| 供应商 | 实体 | 含义 |
+|--------|------|------|
+| Claude Code | `sensor.<渠道>_5h_window_used`、`sensor.<渠道>_7d_window_used`、`sensor.<渠道>_overage_window_used` | 5 小时、7 天与 overage 限流窗口的已用百分比。 |
+| Codex | `sensor.<渠道>_primary_window_used`、`sensor.<渠道>_secondary_window_used` | 主/次限流窗口的已用百分比。 |
+| GitHub Copilot | `sensor.<渠道>_<quota>_remaining`（例如 `sensor.copilot_premium_interactions_remaining`） | 各配额快照的剩余百分比。没有快照的账号按 `limited_user_quotas` / `total_quotas` 计算。 |
+| NanoGPT | `sensor.<渠道>_weekly_input_tokens_used`、`sensor.<渠道>_daily_input_tokens_used`、`sensor.<渠道>_daily_images_used` | 各订阅窗口的已用百分比。 |
 
-- `<channel>` is the slugified channel name shown in AxonHub, for example
-  `sensor.claude_max_5h_window_used`.
-- Window sensors only appear when the provider actually reports that window. An
-  empty Claude Code `overage` window, for instance, produces no entity.
-- The status sensor carries the raw AxonHub payload in its `quota_data` attribute,
-  plus `error` when the last provider check failed, which makes it a good source for
-  template sensors.
+说明：
 
-### Service `axonhub.refresh_quotas`
+- `<渠道>` 是 AxonHub 中渠道名转成的 slug，例如 `sensor.claude_max_5h_window_used`。
+- 只有当供应商真的返回了某个窗口时才会创建对应实体。例如 Claude Code 的 `overage`
+  窗口若为空，就不会产生实体。
+- 状态实体在 `quota_data` 属性里带有 AxonHub 返回的原始数据；最近一次检查失败时还会有
+  `error` 属性，适合用来做模板传感器。
 
-Asks AxonHub to re-check every provider quota immediately instead of waiting for the
-next background interval.
+### 服务 `axonhub.refresh_quotas`
+
+让 AxonHub 立刻重新检查所有供应商额度，而不必等下一次后台周期：
 
 ```yaml
 service: axonhub.refresh_quotas
 data:
-  entry_id: 01J8Z6...   # optional; omit to refresh every configured instance
+  entry_id: 01J8Z6...   # 可选；留空表示刷新全部已配置实例
 ```
 
-The call blocks until AxonHub has finished checking every channel, which may take a
-while because AxonHub checks the channels sequentially. It is the only operation
-that reaches out to the provider APIs.
+该调用会一直阻塞到 AxonHub 检查完所有渠道为止；由于 AxonHub 是逐个渠道串行检查的，
+渠道较多时需要等一会儿。这是唯一会真正请求供应商 API 的操作。
 
-## Examples
+## 自动化示例
 
-Alert when a Claude Code window is nearly exhausted:
+Claude Code 窗口快用满时告警：
 
 ```yaml
 automation:
-  - alias: Claude Code quota running low
+  - alias: Claude Code 额度偏低
     triggers:
       - trigger: numeric_state
         entity_id: sensor.claude_max_5h_window_used
@@ -126,66 +116,104 @@ automation:
       - action: notify.persistent_notification
         data:
           message: >-
-            Claude Code 5h window at
-            {{ states('sensor.claude_max_5h_window_used') }}%,
-            resets {{ states('sensor.claude_max_next_quota_reset') }}.
+            Claude Code 5 小时窗口已用
+            {{ states('sensor.claude_max_5h_window_used') }}%，
+            将于 {{ states('sensor.claude_max_next_quota_reset') }} 重置。
 ```
 
-Show how long is left in a reset window:
+Claude Code 额度耗尽时告警：
+
+```yaml
+automation:
+  - alias: Claude Code 额度耗尽
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.claude_max_quota_ready
+        to: "off"
+        for: "5m"
+    actions:
+      - action: notify.persistent_notification
+        data:
+          message: Claude Code 渠道已不可用，请检查额度。
+```
+
+查看距离重置还有多久：
 
 ```jinja
 {{ (states('sensor.claude_max_next_quota_reset') | as_datetime - now()) }}
 ```
 
-## How it works
+## 工作原理
 
 ```
 Home Assistant                        AxonHub
 ──────────────                        ───────
-POST /admin/auth/signin        ──▶    email/password → 7-day JWT
+POST /admin/auth/signin        ──▶    邮箱/密码 → 有效期 7 天的 JWT
 POST /admin/graphql            ──▶    queryChannels → providerQuotaStatus
                                       (status, nextResetAt, ready, quotaData)
 ```
 
-The admin GraphQL endpoint is used because it is the only AxonHub surface that
-exposes quota data; the API-key based `/openapi/v1/graphql` endpoint only allows
-creating API keys. Per-provider `quotaData` shapes are documented in
-`custom_components/axonhub/quota.py`.
+之所以调用管理端 GraphQL，是因为它是 AxonHub 唯一暴露额度数据的入口——基于 API Key 的
+`/openapi/v1/graphql` 只允许创建 API Key。各供应商 `quotaData` 的字段结构记录在
+`custom_components/axonhub/quota.py` 的模块注释里。
 
-## Troubleshooting
+## 故障排查
 
-| Symptom | Cause / fix |
-|---------|-------------|
-| `invalid_auth` while adding the integration | Wrong email or password, or the account is not activated. |
-| `cannot_connect` | Wrong URL/port, AxonHub not reachable from Home Assistant, or a TLS failure. Disable *Verify SSL certificate* for self-signed certificates. |
-| `insufficient_permissions` | The account cannot read channels. Use the owner account or grant the `read:channels` scope. |
-| No channel devices appear | The channel is not enabled, or its type is not one of the quota-enabled types listed above. Channels without a quota checker are ignored on purpose. |
-| Status stays `unknown` or window sensors are missing | AxonHub has not produced quota data yet (first check pending), or the provider check failed. Inspect the `error` attribute of the status sensor and the AxonHub logs. |
-| Entities disappear | The channel was disabled, deleted or changed to a type without a quota checker; the integration removes stale entities automatically. |
+| 现象 | 原因 / 处理 |
+|------|-------------|
+| 添加集成时报 `invalid_auth` | 邮箱或密码错误，或账号未激活。 |
+| 报 `cannot_connect` | 地址/端口不对，Home Assistant 访问不到 AxonHub，或 TLS 校验失败。自签名证书请关闭"校验 SSL 证书"。 |
+| 报 `insufficient_permissions` | 该账号没有读取渠道的权限。请使用 owner 账号，或授予 `read:channels` 权限。 |
+| 没有任何渠道设备 | 渠道未启用，或类型不属于上面列出的可查额度类型。没有额度检查器的渠道会被有意忽略。 |
+| 状态一直是 `unknown`，或缺少窗口传感器 | AxonHub 还没产出额度数据（首次检查未执行），或供应商检查失败。请看状态实体的 `error` 属性和 AxonHub 日志。 |
+| 实体消失 | 渠道被禁用、删除，或类型改成了没有额度检查器的类型；集成会自动移除过期实体。 |
 
-## Security notes
+## 安全说明
 
-- Credentials are stored in the Home Assistant config entry, as with any
-  username/password integration. Use an account with only the `read:channels`
-  scope if your deployment supports it.
-- Nothing is sent anywhere except to the AxonHub instance you configure.
+- 凭据保存在 Home Assistant 的配置项中（与其它用户名/密码型集成一致）。如果部署支持，
+  建议使用只有 `read:channels` 权限的账号。
+- 除了你配置的 AxonHub 实例，不会向任何其它地方发送数据。
 
-## Development
+## 开发
 
-The integration has no third-party dependencies beyond Home Assistant itself.
+除 Home Assistant 自身外，集成没有第三方运行时依赖。
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install pytest-homeassistant-custom-component aiohttp
-PYTHONPATH=. .venv/bin/python -m pytest tests -q
+.venv/bin/pip install -r requirements_test.txt
+.venv/bin/python -m pytest -q
 ```
 
-The test suite sets up a real Home Assistant instance with a mocked AxonHub client
-and asserts the config flow, entity/device creation, the `refresh_quotas` service
-and the re-authentication flow.
+测试分为两部分：
 
-## License
+- `tests/test_integration.py`：用真实 Home Assistant 实例 + mock 的客户端，验证配置流、
+  实体/设备创建、`refresh_quotas` 服务以及重新认证流程。
+- `tests/test_api.py`：在 localhost 起一个 mock AxonHub 服务端，用真实 `aiohttp` 客户端
+  跑通登录、GraphQL 请求体、JWT 失效后自动重登、错误映射与四个供应商的额度解析。
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) — the integration is written
-for [AxonHub](https://github.com/looplj/axonhub) and mirrors its provider quota data
-formats.
+CI 还会跑 `hassfest` 和 HACS 校验，见
+[`.github/workflows/validate.yml`](.github/workflows/validate.yml)。
+
+## 发布
+
+HACS 安装的是 `custom_components/axonhub/manifest.json` 里声明的 `version`，而**检查更新**
+依赖 GitHub Release。所以每次发版都要有对应的 tag 和 release：
+
+1. 修改 `custom_components/axonhub/manifest.json` 中的 `version`（例如 `0.2.0`）。
+2. 提交并推送。
+3. 打 tag 并推送：
+
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+4. 为该 tag 发布 GitHub Release（`gh release create v0.2.0`，或在网页
+   *Releases → Draft a new release* 中操作）。
+
+第 3、4 步缺一不可：只有 tag 没有 release 时，HACS 会一直显示已安装的版本，不会提示更新。
+
+## 许可证
+
+Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。本项目为
+[AxonHub](https://github.com/looplj/axonhub) 编写并镜像其供应商额度数据格式。
