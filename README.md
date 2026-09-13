@@ -155,7 +155,11 @@ automation:
   解析器的 provider（Command Code、OpenCode Go、Cline、ZenMux 等）的原因。窗口传感器为
   `sensor.<渠道>_<窗口>_used`（百分比），AxonHub 的 `period_cost` / `period_quota` 会作为属性暴露。
 - **更早的版本**（自 v0.8.7 引入 `Channel.providerQuotaStatus` 起）存的是各 provider 的原始
-  payload（`windows`、`rate_limit`、`quota_snapshots` 等），集成按渠道类型分别解析。
+  payload（`windows`、`rate_limit`、`quota_snapshots` 等），集成按 provider 类型分别解析。
+
+集成查询里必须带上 `providerQuotaStatus.providerType`：AxonHub 的解析器会读取该字段来判断
+该 provider 是否启用了额度采集，而 ent 只会加载被查询选中的列——不请求它时解析器读到零值，
+会让所有渠道的该字段一起失败。这是实测踩到的坑，`tests/test_api.py` 里有对应的回归测试。
 
 
 ```
@@ -182,7 +186,6 @@ POST /admin/graphql            ──▶    queryChannels → providerQuotaStatu
 | 没有任何渠道设备 | 渠道未启用，或类型不属于上面列出的可查额度类型。没有额度检查器的渠道会被有意忽略。 |
 | 状态一直是 `unknown`，或缺少窗口传感器 | AxonHub 还没产出额度数据（首次检查未执行），或供应商检查失败。请看状态实体的 `error` 属性和 AxonHub 日志。 |
 | 实体消失 | 渠道被禁用、删除，或类型改成了没有额度检查器的类型；集成会自动移除过期实体。 |
-| 状态是 `unknown`，且 `error` 属性里提到 `unsupported provider quota type` | 该渠道在 AxonHub 里存的额度行 `provider_type` 为空，AxonHub 拒绝解析它。AxonHub 网页端的额度气泡会显示同样的错误。这是服务端数据问题、不是集成问题：集成会继续运行，只把该渠道标为 unknown 并写明原因。请在 AxonHub 侧修复（见下）。 |
 
 ## 安全说明
 

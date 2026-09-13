@@ -71,11 +71,19 @@ class ChannelQuota:
     quota_data: dict[str, Any]
     metrics: list[QuotaMetric]
     error: str | None = None
+    provider_type: str | None = None
+    account_key: str | None = None
 
     @property
     def provider(self) -> str:
-        """Return the provider type as AxonHub reports it."""
-        return self.channel_type
+        """Return the provider AxonHub ran the quota check against.
+
+        ``providerQuotaStatus.providerType`` is authoritative (it maps several
+        channel types onto one provider, for example ``opencode_go_anthropic``
+        and ``opencode_go``), with the channel type as a fallback for channels
+        that have no quota status yet.
+        """
+        return self.provider_type or self.channel_type
 
     def metric(self, key: str) -> QuotaMetric | None:
         """Return one metric by key."""
@@ -117,6 +125,10 @@ def build_channel_quota(node: dict[str, Any]) -> ChannelQuota | None:
 
     status = str(status_object.get("status") or STATUS_UNKNOWN).lower()
 
+    provider_type = _as_text(status_object.get("providerType"))
+    if provider_type:
+        provider_type = provider_type.lower()
+
     error = _as_text(quota_data.get("error"))
     if not error and field_errors:
         error = "; ".join(field_errors)
@@ -131,8 +143,10 @@ def build_channel_quota(node: dict[str, Any]) -> ChannelQuota | None:
         next_reset_at=_parse_time(status_object.get("nextResetAt")),
         next_check_at=_parse_time(status_object.get("nextCheckAt")),
         quota_data=quota_data,
-        metrics=build_metrics(channel_type, quota_data),
+        metrics=build_metrics(provider_type or channel_type, quota_data),
         error=error,
+        provider_type=provider_type,
+        account_key=_as_text(status_object.get("accountKey")),
     )
 
 

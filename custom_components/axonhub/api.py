@@ -48,6 +48,17 @@ _BODY_SNIPPET_LIMIT = 200
 # The same query the AxonHub web UI uses to render provider quota badges.
 # `queryChannels` returns every channel unpaginated as long as neither `first`
 # nor `last` is set.
+#
+# `providerType` is REQUIRED, not decorative: AxonHub's `providerQuotaStatus`
+# resolver reads `pqs.ProviderType` to decide whether quota collection is
+# enabled for that provider, and ent only loads the columns that were actually
+# selected. Without this field the resolver sees the zero value and fails with
+# `unsupported provider quota type: ""`, which nulls the field for every
+# channel. The web UI requests it for the same reason.
+#
+# `accountKey` is deliberately NOT requested: it was added in a later release
+# than `providerQuotaStatus` itself (AxonHub PR #2381), so asking for it would
+# break older instances.
 CHANNEL_QUOTA_QUERY = """
 query HomeAssistantProviderQuotas($input: QueryChannelInput!) {
   queryChannels(input: $input) {
@@ -57,6 +68,7 @@ query HomeAssistantProviderQuotas($input: QueryChannelInput!) {
         name
         type
         providerQuotaStatus {
+          providerType
           status
           nextResetAt
           nextCheckAt

@@ -97,6 +97,7 @@ def node(
         "providerQuotaStatus": None
         if status is None
         else {
+            "providerType": channel_type,
             "status": status,
             "ready": ready,
             "nextResetAt": next_reset,

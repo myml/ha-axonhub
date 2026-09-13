@@ -30,6 +30,7 @@ CLAUDE_CHANNEL = {
     "name": "Claude Max",
     "type": "claudecode",
     "providerQuotaStatus": {
+        "providerType": "claudecode",
         "status": "warning",
         "ready": True,
         "nextResetAt": "2026-01-01T00:00:00Z",
@@ -52,6 +53,7 @@ CODEX_CHANNEL = {
     "name": "ChatGPT Plus",
     "type": "codex",
     "providerQuotaStatus": {
+        "providerType": "codex",
         "status": "available",
         "ready": True,
         "nextResetAt": None,
@@ -79,6 +81,7 @@ COPILOT_CHANNEL = {
     "name": "Copilot",
     "type": "github_copilot",
     "providerQuotaStatus": {
+        "providerType": "github_copilot",
         "status": "warning",
         "ready": True,
         "nextResetAt": None,
@@ -108,6 +111,7 @@ NANOGPT_CHANNEL = {
     "name": "NanoGPT",
     "type": "nanogpt",
     "providerQuotaStatus": {
+        "providerType": "nanogpt",
         "status": "available",
         "ready": True,
         "nextResetAt": None,
@@ -130,6 +134,7 @@ BROKEN_CHANNEL = {
     "name": "Broken",
     "type": "claudecode",
     "providerQuotaStatus": {
+        "providerType": "claudecode",
         "status": "unknown",
         "ready": False,
         "nextResetAt": None,
@@ -143,6 +148,7 @@ COMMANDCODE_CHANNEL = {
     "name": "Command Code",
     "type": "commandcode",
     "providerQuotaStatus": {
+        "providerType": "commandcode",
         "status": "available",
         "ready": True,
         "nextResetAt": "2026-02-01T00:00:00Z",
@@ -173,6 +179,30 @@ COMMANDCODE_CHANNEL = {
     },
 }
 
+OPENCODE_CHANNEL = {
+    "id": "gid://axonhub/channel/8",
+    "name": "OpenCode Go",
+    "type": "opencode_go_anthropic",
+    "providerQuotaStatus": {
+        "providerType": "opencode_go",
+        "status": "available",
+        "ready": True,
+        "nextResetAt": None,
+        "nextCheckAt": "2026-01-01T00:20:00Z",
+        "quotaData": {
+            "_limits": [
+                {
+                    "type": "token",
+                    "status": "available",
+                    "usageRatio": 0.72,
+                    "ready": True,
+                    "window": "weekly",
+                }
+            ]
+        },
+    },
+}
+
 UNSUPPORTED_CHANNEL = {
     "id": "gid://axonhub/channel/6",
     "name": "Plain Anthropic",
@@ -188,6 +218,7 @@ CHANNELS = [
     BROKEN_CHANNEL,
     UNSUPPORTED_CHANNEL,
     COMMANDCODE_CHANNEL,
+    OPENCODE_CHANNEL,
 ]
 
 
@@ -299,6 +330,29 @@ async def test_sign_in_and_fetch_channels(mock_axonhub: Any) -> None:
     assert "providerQuotaStatus" in body["query"]
     assert "quotaData" in body["query"]
     assert body["query"].lstrip().startswith("query")
+
+
+async def test_query_requests_provider_type(mock_axonhub: Any) -> None:
+    """The query must select ``providerType``.
+
+    AxonHub's providerQuotaStatus resolver reads `pqs.ProviderType` while ent
+    only loads selected columns, so omitting the field makes the resolver see
+    the zero value and fail with `unsupported provider quota type: ""` for every
+    channel. This is a subtle dependency that is easy to drop while editing the
+    query, hence the explicit check.
+    """
+    import aiohttp
+
+    state, base_url = mock_axonhub
+
+    async with aiohttp.ClientSession() as session:
+        client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
+        await client.async_get_channels()
+
+    query = state.graphql_bodies[-1]["query"]
+    assert "providerType" in query
+    # accountKey only exists in newer AxonHub releases, so it must not be asked for.
+    assert "accountKey" not in query
 
 
 async def test_base_url_is_normalized(mock_axonhub: Any) -> None:
@@ -530,9 +584,11 @@ async def test_channel_quota_parsing(mock_axonhub: Any) -> None:
         "channel_4",
         "channel_5",
         "channel_7",
+        "channel_8",
     ]
 
     claude = channels["channel_1"]
+    assert claude.provider == "claudecode"
     assert claude.status == "warning"
     assert claude.ready is True
     assert claude.next_reset_at is not None
@@ -566,6 +622,13 @@ async def test_channel_quota_parsing(mock_axonhub: Any) -> None:
     assert [metric.key for metric in nanogpt.metrics] == ["window_weeklyinputtokens"]
     assert nanogpt.metrics[0].value == 10.0
     assert nanogpt.metrics[0].attributes["reset_at"].startswith("2026-01-01")
+
+    # providerType wins over the channel type when they differ.
+    opencode = channels["channel_8"]
+    assert opencode.channel_type == "opencode_go_anthropic"
+    assert opencode.provider == "opencode_go"
+    weekly = opencode.metric("limit_weekly_token")
+    assert weekly is not None and weekly.value == 72.0
 
     # A failed provider check keeps the error but exposes no window sensors.
     broken = channels["channel_5"]
