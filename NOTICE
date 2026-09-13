@@ -1,0 +1,10 @@
+AxonHub for Home Assistant
+Copyright 2026 myml
+
+This product includes software developed as part of AxonHub
+(https://github.com/looplj/axonhub), which is licensed under the
+Apache License, Version 2.0.
+
+The integration reimplements the parsing of AxonHub's provider quota payloads
+(Claude Code, Codex, GitHub Copilot, NanoGPT) and talks to the AxonHub admin
+GraphQL API. It contains no code copied from AxonHub.

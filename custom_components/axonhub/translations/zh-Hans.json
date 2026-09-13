@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "连接 AxonHub",
+        "description": "请使用可以读取渠道的 AxonHub 账号登录，owner 账号开箱即用。",
+        "data": {
+          "base_url": "AxonHub 地址",
+          "email": "邮箱",
+          "password": "密码",
+          "verify_ssl": "校验 SSL 证书"
+        }
+      },
+      "reauth_confirm": {
+        "title": "重新认证 AxonHub",
+        "description": "{url} 拒绝了已保存的凭据，请重新输入。",
+        "data": {
+          "email": "邮箱",
+          "password": "密码"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "AxonHub 地址无效",
+      "invalid_auth": "邮箱或密码错误",
+      "cannot_connect": "无法连接 AxonHub",
+      "api_error": "AxonHub 返回了错误",
+      "insufficient_permissions": "该账号没有读取渠道的权限"
+    },
+    "abort": {
+      "already_configured": "该 AxonHub 实例已经配置过了",
+      "reauth_entry_missing": "AxonHub 配置项已不存在"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AxonHub 选项",
+        "data": {
+          "scan_interval_seconds": "轮询间隔（秒）",
+          "verify_ssl": "校验 SSL 证书"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "quota_status": {
+        "name": "额度状态",
+        "state": {
+          "available": "可用",
+          "warning": "接近限额",
+          "exhausted": "已耗尽",
+          "unknown": "未知"
+        }
+      },
+      "quota_next_reset": {
+        "name": "额度重置时间"
+      }
+    },
+    "binary_sensor": {
+      "quota_ready": {
+        "name": "额度可用"
+      }
+    }
+  },
+  "services": {
+    "refresh_quotas": {
+      "name": "刷新供应商额度",
+      "description": "让 AxonHub 立刻重新检查所有渠道的供应商额度，而不必等待周期性后台检查。",
+      "fields": {
+        "entry_id": {
+          "name": "配置项",
+          "description": "只刷新该 AxonHub 实例；留空表示刷新全部已配置实例。"
+        }
+      }
+    }
+  }
+}

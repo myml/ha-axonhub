@@ -1,0 +1,16 @@
+refresh_quotas:
+  name: Refresh provider quotas
+  description: >-
+    Ask AxonHub to re-check the provider quota of every channel right now
+    instead of waiting for the periodic background check (20 minutes by
+    default). The call blocks until AxonHub has finished checking, which can
+    take a while on instances with many channels.
+  fields:
+    entry_id:
+      name: Config entry
+      description: >-
+        Only refresh this AxonHub instance. Leave empty to refresh every
+        configured instance.
+      required: false
+      selector:
+        text:

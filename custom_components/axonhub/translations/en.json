@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to AxonHub",
+        "description": "Sign in with an AxonHub account that is allowed to read channels. The owner account works out of the box.",
+        "data": {
+          "base_url": "AxonHub URL",
+          "email": "Email",
+          "password": "Password",
+          "verify_ssl": "Verify SSL certificate"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate AxonHub",
+        "description": "AxonHub at {url} rejected the stored credentials. Enter them again.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "The AxonHub URL is not valid",
+      "invalid_auth": "Invalid email or password",
+      "cannot_connect": "Failed to connect to AxonHub",
+      "api_error": "AxonHub returned an error",
+      "insufficient_permissions": "This account is not allowed to read channels"
+    },
+    "abort": {
+      "already_configured": "This AxonHub instance is already configured",
+      "reauth_entry_missing": "The AxonHub configuration entry no longer exists"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AxonHub options",
+        "data": {
+          "scan_interval_seconds": "Poll interval (seconds)",
+          "verify_ssl": "Verify SSL certificate"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "quota_status": {
+        "name": "Quota status",
+        "state": {
+          "available": "Available",
+          "warning": "Warning",
+          "exhausted": "Exhausted",
+          "unknown": "Unknown"
+        }
+      },
+      "quota_next_reset": {
+        "name": "Next quota reset"
+      }
+    },
+    "binary_sensor": {
+      "quota_ready": {
+        "name": "Quota ready"
+      }
+    }
+  },
+  "services": {
+    "refresh_quotas": {
+      "name": "Refresh provider quotas",
+      "description": "Ask AxonHub to re-check the provider quota of every channel right now instead of waiting for the periodic background check.",
+      "fields": {
+        "entry_id": {
+          "name": "Config entry",
+          "description": "Only refresh this AxonHub instance. Leave empty to refresh every configured instance."
+        }
+      }
+    }
+  }
+}
