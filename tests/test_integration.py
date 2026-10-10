@@ -350,7 +350,7 @@ async def test_setup_creates_quota_entities(
     assert five_hour is not None
     assert five_hour.state == "82.0"
     assert five_hour.attributes["unit_of_measurement"] == "%"
-    assert five_hour.attributes["reset_at"].startswith("2026-01-01")
+    assert five_hour.attributes["next_reset_at"].startswith("2026-01-01")
 
     seven_day = hass.states.get("sensor.claude_max_7d_window_used")
     assert seven_day is not None
@@ -359,9 +359,22 @@ async def test_setup_creates_quota_entities(
     # The empty "overage" window must not create an entity.
     assert hass.states.get("sensor.claude_max_overage_window_used") is None
 
-    reset = hass.states.get("sensor.claude_max_next_quota_reset")
-    assert reset is not None
-    assert reset.state == "2026-01-01T00:00:00+00:00"
+    # Every window carries its own reset timestamp; the two Claude windows
+    # reset at different times.
+    five_hour_reset = hass.states.get("sensor.claude_max_5h_window_reset")
+    assert five_hour_reset is not None
+    assert five_hour_reset.state == "2026-01-01T00:00:00+00:00"
+    assert five_hour_reset.attributes["device_class"] == "timestamp"
+    # The paired percentage rides along so one card row can show both.
+    assert five_hour_reset.attributes["value"] == 82.0
+    assert five_hour_reset.attributes["unit"] == "%"
+
+    seven_day_reset = hass.states.get("sensor.claude_max_7d_window_reset")
+    assert seven_day_reset is not None
+    assert seven_day_reset.state == "2026-01-07T00:00:00+00:00"
+
+    # The channel wide reset entity is gone: reset is per window now.
+    assert hass.states.get("sensor.claude_max_next_quota_reset") is None
 
     ready = hass.states.get("binary_sensor.claude_max_quota_ready")
     assert ready is not None
@@ -370,12 +383,25 @@ async def test_setup_creates_quota_entities(
     # Codex channel.
     assert hass.states.get("sensor.chatgpt_plus_primary_window_used").state == "43.5"
     assert hass.states.get("sensor.chatgpt_plus_secondary_window_used").state == "12.0"
+    assert (
+        hass.states.get("sensor.chatgpt_plus_primary_window_reset").state
+        == "2026-01-01T00:00:00+00:00"
+    )
+    assert (
+        hass.states.get("sensor.chatgpt_plus_secondary_window_reset").state
+        == "2026-01-07T00:00:00+00:00"
+    )
 
-    # Copilot channel.
+    # Copilot channel. Its snapshot reports *remaining* percent, so the reset
+    # entity is named after "remaining" rather than "used".
     premium = hass.states.get("sensor.copilot_premium_interactions_remaining")
     assert premium is not None
     assert premium.state == "12.5"
     assert premium.attributes["entitlement"] == 300.0
+    assert (
+        hass.states.get("sensor.copilot_premium_interactions_reset").state
+        == "2026-01-01T00:00:00+00:00"
+    )
 
     # Channels without a quota checker are ignored entirely.
     assert not [
@@ -387,7 +413,7 @@ async def test_setup_creates_quota_entities(
     devices = dr.async_get(hass)
     channel_devices = [
         device
-        for device in devices.devices
+        for device in devices.devices.values()
         if device.name in {"Claude Max", "ChatGPT Plus", "Copilot"}
     ]
     assert len(channel_devices) == 3, [device.name for device in channel_devices]
@@ -397,11 +423,40 @@ async def test_setup_creates_quota_entities(
 
     hub = next(
         device
-        for device in devices.devices
+        for device in devices.devices.values()
         if (DOMAIN, entry.entry_id) in device.identifiers
     )
     assert hub.name == "axon.local:8090"
     assert hub.configuration_url == BASE_URL
+
+
+async def test_legacy_next_reset_entity_is_removed(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """The channel wide reset entity of earlier releases is cleaned up.
+
+    It has no replacement with the same unique_id (resets are per window now),
+    so without this it would stay in the registry as an unavailable leftover.
+    """
+    entry = make_entry()
+    entry.add_to_hass(hass)
+
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{entry.entry_id}_channel_1_next_reset",
+        config_entry=entry,
+        suggested_object_id="claude_max_next_quota_reset",
+    )
+    assert registry.async_get("sensor.claude_max_next_quota_reset") is not None
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert registry.async_get("sensor.claude_max_next_quota_reset") is None
+    # The per window entities took its place.
+    assert registry.async_get("sensor.claude_max_5h_window_reset") is not None
 
 
 async def test_setup_creates_instance_statistics(
@@ -455,7 +510,7 @@ async def test_setup_creates_instance_statistics(
     devices = dr.async_get(hass)
     hub = next(
         device
-        for device in devices.devices
+        for device in devices.devices.values()
         if (DOMAIN, entry.entry_id) in device.identifiers
     )
     registry = er.async_get(hass)

@@ -55,9 +55,6 @@
           "unknown": "未知"
         }
       },
-      "quota_next_reset": {
-        "name": "额度重置时间"
-      },
       "requests_total": {
         "name": "累计请求数"
       },

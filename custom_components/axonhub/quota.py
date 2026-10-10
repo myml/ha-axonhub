@@ -11,8 +11,14 @@ normalizes every provider into a provider-agnostic list before storing it, under
      "periodCost": 1.23, "periodQuota": 5.0}
 
 That is the primary source here, so every provider AxonHub knows about is
-covered without keeping a channel-type list in sync. The per-provider raw
-payloads are still parsed as a fallback for older instances:
+covered without keeping a channel-type list in sync. Every limit carries its
+own ``nextResetAt``, which is why the reset time is modelled per window
+(:attr:`QuotaMetric.reset_at`) instead of only as one channel wide timestamp
+(``providerQuotaStatus.nextResetAt`` is just a summary — for Codex it is the
+earliest of the windows, see ``codexEarliestFutureReset`` upstream).
+
+The per-provider raw payloads are still parsed as a fallback for older
+instances:
 
 * ``claudecode_checker.go`` – ``windows.<5h|7d|overage>.{utilization,reset,status}``
   where ``utilization`` is a 0..1 ratio and ``reset`` a unix timestamp.
@@ -54,6 +60,28 @@ class QuotaMetric:
     unit: str | None = None
     icon: str | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
+
+    reset_at: datetime | None = None
+    """Next reset of this window.
+
+    Each provider window resets on its own schedule, so this is tracked per
+    metric and becomes its own timestamp sensor. ``None`` when the provider
+    does not report a reset for this window (Codex omits ``reset_at`` on the
+    secondary window in some payloads, the raw strings of an older AxonHub
+    instance may not parse, ...).
+    """
+
+    @property
+    def reset_name(self) -> str:
+        """Return the entity name of this window's reset timestamp.
+
+        Derived from :attr:`name` so a window always pairs ``<window> used``
+        with ``<window> reset`` without every builder repeating the label.
+        """
+        for suffix in (" used", " remaining"):
+            if self.name.endswith(suffix):
+                return f"{self.name[: -len(suffix)]} reset"
+        return f"{self.name} reset"
 
 
 @dataclass(slots=True)
@@ -247,7 +275,6 @@ def _limits_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
             "type": limit_type or None,
             "status": _as_text(raw.get("status")),
             "ready": raw.get("ready") if isinstance(raw.get("ready"), bool) else None,
-            "next_reset_at": _as_text(raw.get("nextResetAt")),
             "period_start": _as_text(raw.get("periodStart")),
         }
         period_cost = _as_float(raw.get("periodCost"))
@@ -270,6 +297,7 @@ def _limits_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 unit=PERCENTAGE,
                 icon="mdi:percent",
                 attributes={k: v for k, v in attributes.items() if v is not None},
+                reset_at=_parse_time(raw.get("nextResetAt")),
             )
         )
 
@@ -320,7 +348,6 @@ def _claudecode_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
         }
         if reset:
             attributes["reset"] = reset
-            attributes["reset_at"] = _from_unix_seconds(reset)
 
         metrics.append(
             QuotaMetric(
@@ -330,6 +357,7 @@ def _claudecode_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 unit=PERCENTAGE,
                 icon="mdi:percent",
                 attributes=attributes,
+                reset_at=_unix_seconds(reset),
             )
         )
 
@@ -358,7 +386,7 @@ def _codex_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
         }
         reset_at = _as_int(window.get("reset_at"))
         if reset_at:
-            attributes["reset_at"] = _from_unix_seconds(reset_at)
+            attributes["reset_at"] = reset_at
         reset_after = _as_int(window.get("reset_after_seconds"))
         if reset_after:
             attributes["reset_after_seconds"] = reset_after
@@ -376,6 +404,7 @@ def _codex_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 unit=PERCENTAGE,
                 icon="mdi:percent",
                 attributes=attributes,
+                reset_at=_unix_seconds(reset_at),
             )
         )
 
@@ -421,6 +450,7 @@ def _copilot_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                     unit=None if unlimited else PERCENTAGE,
                     icon="mdi:battery-heart-variant",
                     attributes=attributes,
+                    reset_at=_epoch(reset_at),
                 )
             )
 
@@ -487,7 +517,6 @@ def _nanogpt_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
         reset_at = _as_int(window.get("resetAt"))
         if reset_at:
             attributes["resetAt"] = reset_at
-            attributes["reset_at"] = _from_unix_millis(reset_at)
 
         metrics.append(
             QuotaMetric(
@@ -497,6 +526,7 @@ def _nanogpt_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 unit=PERCENTAGE,
                 icon="mdi:percent",
                 attributes=attributes,
+                reset_at=_unix_millis(reset_at),
             )
         )
 
@@ -571,14 +601,40 @@ def _parse_time(value: Any) -> datetime | None:
     return dt_util.as_utc(parsed)
 
 
-def _from_unix_seconds(timestamp: int) -> str | None:
-    """Render a unix-seconds timestamp as an ISO 8601 string."""
+def _unix_seconds(timestamp: float | None) -> datetime | None:
+    """Turn a unix-seconds timestamp into an aware UTC datetime."""
+    if not timestamp:
+        return None
     try:
-        return dt_util.utc_from_timestamp(timestamp).isoformat()
+        return dt_util.utc_from_timestamp(timestamp)
     except (OverflowError, OSError, ValueError):
         return None
 
 
-def _from_unix_millis(timestamp: int) -> str | None:
-    """Render a unix-milliseconds timestamp as an ISO 8601 string."""
-    return _from_unix_seconds(timestamp / 1000)
+def _unix_millis(timestamp: float | None) -> datetime | None:
+    """Turn a unix-milliseconds timestamp into an aware UTC datetime."""
+    if not timestamp:
+        return None
+    return _unix_seconds(timestamp / 1000)
+
+
+# Anything above this cannot be a plausible unix-seconds value (1e11 seconds is
+# well past year 5000), so it must be milliseconds.
+_MILLIS_THRESHOLD = 1e11
+
+
+def _epoch(timestamp: float | None) -> datetime | None:
+    """Turn an epoch timestamp of unknown unit into a datetime.
+
+    GitHub Copilot's ``quota_snapshots`` are passed through to ``quotaData``
+    verbatim and AxonHub never reads ``quota_reset_at`` itself, so there is no
+    upstream code confirming whether it is seconds or milliseconds. Newer
+    AxonHub builds do not need this (their normalized ``_limits`` carries an ISO
+    ``nextResetAt``), so the unit is inferred from magnitude rather than
+    assumed: the alternative is a reset entity wrong by a factor of 1000.
+    """
+    if not timestamp:
+        return None
+    if timestamp >= _MILLIS_THRESHOLD:
+        return _unix_millis(timestamp)
+    return _unix_seconds(timestamp)

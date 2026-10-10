@@ -55,9 +55,6 @@
           "unknown": "Unknown"
         }
       },
-      "quota_next_reset": {
-        "name": "Next quota reset"
-      },
       "requests_total": {
         "name": "Total requests"
       },

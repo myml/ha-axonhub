@@ -3,7 +3,10 @@
 Two groups of sensors live here:
 
 * one set per quota-enabled channel (devices named after the channel), created
-  and removed dynamically from the coordinator payload, and
+  and removed dynamically from the coordinator payload. Every quota window the
+  provider reports becomes a percentage sensor plus, when the provider gives a
+  reset time for that window, a timestamp sensor; the status sensor carries the
+  channel level state.
 * a fixed set for the AxonHub instance itself (request and token counters),
   attached to the hub device the integration registers.
 """
@@ -21,6 +24,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import AxonHubRuntime
@@ -40,6 +44,8 @@ async def async_setup_entry(
     runtime: AxonHubRuntime = hass.data[DOMAIN][entry.entry_id]
     coordinator = runtime.quota
 
+    _async_remove_legacy_entities(hass, entry)
+
     manager = AxonHubEntityManager(coordinator, async_add_entities, _build_entities)
     await manager.async_sync()
     entry.async_on_unload(coordinator.async_add_listener(manager.async_schedule_sync))
@@ -48,6 +54,19 @@ async def async_setup_entry(
     # the payload, so they are added once and simply become unavailable while
     # AxonHub will not answer the dashboard query.
     async_add_entities(_build_instance_entities(runtime.stats))
+
+
+def _async_remove_legacy_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Drop entities earlier releases registered for this entry.
+
+    Until resets became per window, every channel had one ``_next_reset``
+    entity. Nothing provides it any more, and Home Assistant would otherwise
+    keep it in the registry as a permanently unavailable leftover.
+    """
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.unique_id.endswith("_next_reset"):
+            registry.async_remove(entity.entity_id)
 
 
 def _build_instance_entities(
@@ -99,13 +118,16 @@ def _build_entities(
         entities[f"{channel_key}_status"] = AxonHubQuotaStatusSensor(
             coordinator, channel_key
         )
-        entities[f"{channel_key}_next_reset"] = AxonHubNextResetSensor(
-            coordinator, channel_key
-        )
         for metric in channel.metrics:
             entities[f"{channel_key}_metric_{metric.key}"] = AxonHubQuotaMetricSensor(
                 coordinator, channel_key, metric.key
             )
+            # A window only gets a reset entity when the provider actually
+            # reported one for it; otherwise it would sit at `unknown` forever.
+            if metric.reset_at is not None:
+                entities[f"{channel_key}_metric_{metric.key}_reset"] = (
+                    AxonHubQuotaResetSensor(coordinator, channel_key, metric.key)
+                )
 
     return entities
 
@@ -155,50 +177,30 @@ class AxonHubQuotaStatusSensor(AxonHubEntity, SensorEntity):
         return attributes
 
 
-class AxonHubNextResetSensor(AxonHubEntity, SensorEntity):
-    """Timestamp at which the primary quota window resets."""
+class AxonHubMetricEntity(AxonHubEntity):
+    """Base class for the entities derived from one quota window.
 
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_translation_key = "quota_next_reset"
-    _attr_icon = "mdi:timer-refresh-outline"
-
-    def __init__(self, coordinator: AxonHubQuotaCoordinator, channel_key: str) -> None:
-        """Initialize the reset sensor."""
-        super().__init__(coordinator, channel_key)
-        self._attr_unique_id = (
-            f"{coordinator.entry.entry_id}_{channel_key}_next_reset"
-        )
-
-    @property
-    def native_value(self) -> datetime | None:
-        """Return the next quota reset timestamp."""
-        channel = self.channel
-        if channel is None:
-            return None
-        return channel.next_reset_at
-
-
-class AxonHubQuotaMetricSensor(AxonHubEntity, SensorEntity):
-    """One quota window reported by the provider (utilization or remaining)."""
-
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    A window produces two entities — the percentage and, when the provider
+    reports one, its reset timestamp — so the shared lookup and the name
+    refresh live here. Home Assistant allows only a single state and a single
+    device class per entity, which is why utilization and reset time cannot
+    share one.
+    """
 
     def __init__(
         self,
         coordinator: AxonHubQuotaCoordinator,
         channel_key: str,
         metric_key: str,
+        suffix: str = "",
     ) -> None:
-        """Initialize the metric sensor."""
+        """Initialize the metric entity."""
         super().__init__(coordinator, channel_key)
         self._metric_key = metric_key
         self._attr_unique_id = (
-            f"{coordinator.entry.entry_id}_{channel_key}_{metric_key}"
+            f"{coordinator.entry.entry_id}_{channel_key}_{metric_key}{suffix}"
         )
-
-        metric = self._metric
-        if metric is not None:
-            self._attr_name = metric.name
+        self._sync_name()
 
     @property
     def _metric(self) -> QuotaMetric | None:
@@ -207,6 +209,36 @@ class AxonHubQuotaMetricSensor(AxonHubEntity, SensorEntity):
         if channel is None:
             return None
         return channel.metric(self._metric_key)
+
+    def _entity_name(self, metric: QuotaMetric) -> str:
+        """Return the entity name for the metric."""
+        return metric.name
+
+    def _sync_name(self) -> None:
+        """Set the entity name from the metric."""
+        metric = self._metric
+        if metric is not None:
+            self._attr_name = self._entity_name(metric)
+
+    def _base_attributes(self, metric: QuotaMetric) -> dict[str, Any]:
+        """Return the window attributes shared by both entities."""
+        attributes = dict(metric.attributes)
+        channel = self.channel
+        if channel is not None:
+            attributes["channel_name"] = channel.name
+            attributes["provider"] = channel.provider
+        return attributes
+
+    def _handle_coordinator_update(self) -> None:
+        """Refresh the entity name, the metric name may only appear later."""
+        self._sync_name()
+        super()._handle_coordinator_update()
+
+
+class AxonHubQuotaMetricSensor(AxonHubMetricEntity, SensorEntity):
+    """One quota window reported by the provider (utilization or remaining)."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> float | None:
@@ -230,25 +262,61 @@ class AxonHubQuotaMetricSensor(AxonHubEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Expose provider specific details such as the window reset time."""
+        """Expose provider specific details such as the window reset time.
+
+        ``next_reset_at`` is repeated here as an ISO 8601 string (the reset
+        entity carries the same moment as a real timestamp) so a single row can
+        show the percentage and its reset time without a second entity.
+        """
         metric = self._metric
-        channel = self.channel
         if metric is None:
             return {}
 
-        attributes = dict(metric.attributes)
-        if channel is not None:
-            attributes["channel_name"] = channel.name
-            attributes["provider"] = channel.provider
+        attributes = self._base_attributes(metric)
+        if metric.reset_at is not None:
+            attributes["next_reset_at"] = metric.reset_at.isoformat()
 
         return attributes
 
-    def _handle_coordinator_update(self) -> None:
-        """Refresh the entity name, the metric name may only appear later."""
+
+class AxonHubQuotaResetSensor(AxonHubMetricEntity, SensorEntity):
+    """Timestamp at which one quota window resets.
+
+    Providers reset their windows independently (a Claude Code 5h window and
+    its 7d window do not expire together), so every window reported with a
+    reset gets its own timestamp entity instead of a single channel wide one.
+    """
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:timer-refresh-outline"
+
+    def __init__(
+        self, coordinator: AxonHubQuotaCoordinator, channel_key: str, metric_key: str
+    ) -> None:
+        """Initialize the reset sensor."""
+        super().__init__(coordinator, channel_key, metric_key, suffix="_reset")
+
+    def _entity_name(self, metric: QuotaMetric) -> str:
+        """Return the window name with a ``reset`` suffix."""
+        return metric.reset_name
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the next reset timestamp of this window."""
         metric = self._metric
-        if metric is not None:
-            self._attr_name = metric.name
-        super()._handle_coordinator_update()
+        return metric.reset_at if metric is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the window details and the paired percentage value."""
+        metric = self._metric
+        if metric is None:
+            return {}
+
+        attributes = self._base_attributes(metric)
+        attributes["value"] = metric.value
+        attributes["unit"] = metric.unit
+        return attributes
 
 
 class AxonHubRequestSensor(AxonHubHubEntity, SensorEntity):

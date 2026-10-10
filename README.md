@@ -72,25 +72,36 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
 | 实体 | 说明 |
 |------|------|
 | `sensor.<渠道>_quota_status` | 总体状态：`available`、`warning`、`exhausted` 或 `unknown`。 |
-| `sensor.<渠道>_next_quota_reset` | 主要额度窗口的下次重置时间。 |
 | `binary_sensor.<渠道>_quota_ready` | 渠道是否仍可服务（状态为 `available` 或 `warning` 时为 `on`）。 |
 
 各供应商的窗口传感器：
 
 | 供应商 | 实体 | 含义 |
 |--------|------|------|
-| Claude Code | `sensor.<渠道>_5h_window_used`、`sensor.<渠道>_7d_window_used`、`sensor.<渠道>_overage_window_used` | 5 小时、7 天与 overage 限流窗口的已用百分比。 |
+| Claude Code | `sensor.<渠道>_5h_window_used`、`sensor.<渠道>_7d_window_used`、`sensor.<渠道>_overage_window_used` | 5 小时、7 天与 overage 限流窗口的**已用百分比**。 |
 | Codex | `sensor.<渠道>_primary_window_used`、`sensor.<渠道>_secondary_window_used` | 主/次限流窗口的已用百分比。 |
-| GitHub Copilot | `sensor.<渠道>_<quota>_remaining`（例如 `sensor.copilot_premium_interactions_remaining`） | 各配额快照的剩余百分比。没有快照的账号按 `limited_user_quotas` / `total_quotas` 计算。 |
+| GitHub Copilot | `sensor.<渠道>_<quota>_remaining`（例如 `sensor.copilot_premium_interactions_remaining`） | 各配额快照的**剩余百分比**。没有快照的账号按 `limited_user_quotas` / `total_quotas` 计算。 |
 | NanoGPT | `sensor.<渠道>_weekly_input_tokens_used`、`sensor.<渠道>_daily_input_tokens_used`、`sensor.<渠道>_daily_images_used` | 各订阅窗口的已用百分比。 |
+
+**每个窗口的重置时间**：供应商各自的窗口是独立重置的（Claude Code 的 5 小时窗口和 7 天
+窗口不会同时到期），所以每个上报了重置时间的窗口都会再生成一个时间戳实体：
+
+| 实体 | 说明 |
+|------|------|
+| `sensor.<渠道>_<窗口>_reset` | 该窗口的下次重置时间（`device_class: timestamp`，例如 `sensor.claude_max_5h_window_reset`）。 |
 
 说明：
 
+- 百分比和重置时间是**两个实体**：Home Assistant 每个实体只能有一个状态和一个
+  `device_class`，`%` 和时间戳无法共用一个状态。想在一行里同时看到两者，可以读
+  `_reset` 实体的 `value` / `unit` 属性（该窗口的百分比），或读 `_used` 实体的
+  `next_reset_at` 属性（ISO 8601 字符串）。
+- 只有供应商真的上报了某个窗口（以及该窗口的重置时间）时才会创建对应实体。例如 Claude Code
+  的 `overage` 窗口若为空，就不会产生实体；Codex 没给 `reset_at` 的窗口也不会有 `_reset` 实体。
 - `<渠道>` 是 AxonHub 中渠道名转成的 slug，例如 `sensor.claude_max_5h_window_used`。
-- 只有当供应商真的返回了某个窗口时才会创建对应实体。例如 Claude Code 的 `overage`
-  窗口若为空，就不会产生实体。
 - 状态实体在 `quota_data` 属性里带有 AxonHub 返回的原始数据；最近一次检查失败时还会有
-  `error` 属性，适合用来做模板传感器。
+  `error` 属性，适合用来做模板传感器。它的 `next_reset_at` 属性是 AxonHub 计算出的**渠道级**
+  汇总值（多个窗口时通常是最早到期的那个），要精确到窗口请用上面的 `_reset` 实体。
 
 ### 实例统计（请求数、Token）
 
@@ -169,7 +180,7 @@ automation:
           message: >-
             Claude Code 5 小时窗口已用
             {{ states('sensor.claude_max_5h_window_used') }}%，
-            将于 {{ states('sensor.claude_max_next_quota_reset') }} 重置。
+            将于 {{ states('sensor.claude_max_5h_window_reset') }} 重置。
 ```
 
 Claude Code 额度耗尽时告警：
@@ -191,7 +202,7 @@ automation:
 查看距离重置还有多久：
 
 ```jinja
-{{ (states('sensor.claude_max_next_quota_reset') | as_datetime - now()) }}
+{{ (states('sensor.claude_max_5h_window_reset') | as_datetime - now()) }}
 ```
 
 ## 工作原理
@@ -201,7 +212,8 @@ automation:
 - **AxonHub v1.0.0-beta8 及以上**会把各 provider 的额度统一归一化到 `quotaData._limits`
   数组（`window`、`usageRatio`，与 provider 无关）。集成优先使用它，这也是它能覆盖没有专门
   解析器的 provider（Command Code、OpenCode Go、Cline、ZenMux 等）的原因。窗口传感器为
-  `sensor.<渠道>_<窗口>_used`（百分比），AxonHub 的 `period_cost` / `period_quota` 会作为属性暴露。
+  `sensor.<渠道>_<窗口>_used`（百分比）与 `sensor.<渠道>_<窗口>_reset`（重置时间），
+  AxonHub 的 `period_cost` / `period_quota` 会作为属性暴露。
 - **更早的版本**（自 v0.8.7 引入 `Channel.providerQuotaStatus` 起）存的是各 provider 的原始
   payload（`windows`、`rate_limit`、`quota_snapshots` 等），集成按 provider 类型分别解析。
 

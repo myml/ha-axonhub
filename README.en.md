@@ -81,7 +81,6 @@ channel.
 | Entity | Description |
 |--------|-------------|
 | `sensor.<channel>_quota_status` | Overall status: `available`, `warning`, `exhausted` or `unknown`. |
-| `sensor.<channel>_next_quota_reset` | Timestamp of the next reset of the primary quota window. |
 | `binary_sensor.<channel>_quota_ready` | `on` while the channel can still serve requests (status `available` or `warning`). |
 
 Provider specific window sensors:
@@ -93,15 +92,31 @@ Provider specific window sensors:
 | GitHub Copilot | `sensor.<channel>_<quota>_remaining` (for example `sensor.copilot_premium_interactions_remaining`) | Remaining percentage per quota snapshot. Accounts without snapshots get the value computed from `limited_user_quotas` / `total_quotas`. |
 | NanoGPT | `sensor.<channel>_weekly_input_tokens_used`, `sensor.<channel>_daily_input_tokens_used`, `sensor.<channel>_daily_images_used` | Utilization of each subscription window, in percent. |
 
+**Reset time per window.** Providers reset their windows independently — a Claude Code
+5-hour window and its 7-day window do not expire together — so every window that comes
+with a reset time also gets its own timestamp entity:
+
+| Entity | Description |
+|--------|-------------|
+| `sensor.<channel>_<window>_reset` | When that window resets (`device_class: timestamp`, for example `sensor.claude_max_5h_window_reset`). |
+
 Notes:
 
+- The percentage and the reset time are **two entities**: Home Assistant gives every entity
+  exactly one state and one `device_class`, so a `%` and a timestamp cannot share a state.
+  To show both in a single row, read the `value` / `unit` attributes of the `_reset` entity
+  (the paired percentage) or the `next_reset_at` attribute of the `_used` entity (an ISO
+  8601 string).
+- Window entities only appear when the provider actually reports that window, and a `_reset`
+  entity only when it reports a reset for it. An empty Claude Code `overage` window, for
+  instance, produces no entity, and a Codex window without `reset_at` gets no reset entity.
 - `<channel>` is the slugified channel name shown in AxonHub, for example
   `sensor.claude_max_5h_window_used`.
-- Window sensors only appear when the provider actually reports that window. An
-  empty Claude Code `overage` window, for instance, produces no entity.
 - The status sensor carries the raw AxonHub payload in its `quota_data` attribute,
   plus `error` when the last provider check failed, which makes it a good source for
-  template sensors.
+  template sensors. Its `next_reset_at` attribute is the channel wide summary AxonHub
+  computes (with several windows, usually the earliest); use the `_reset` entities for
+  a specific window.
 
 ### Instance statistics (requests, tokens)
 
@@ -186,13 +201,13 @@ automation:
           message: >-
             Claude Code 5h window at
             {{ states('sensor.claude_max_5h_window_used') }}%,
-            resets {{ states('sensor.claude_max_next_quota_reset') }}.
+            resets {{ states('sensor.claude_max_5h_window_reset') }}.
 ```
 
 Show how long is left in a reset window:
 
 ```jinja
-{{ (states('sensor.claude_max_next_quota_reset') | as_datetime - now()) }}
+{{ (states('sensor.claude_max_5h_window_reset') | as_datetime - now()) }}
 ```
 
 ## How it works
@@ -204,7 +219,8 @@ shapes are supported, so both older and newer AxonHub releases work:
   `quotaData._limits` array (`window`, `usageRatio`, provider-independent). The
   integration prefers this, which is why it also covers providers it has no
   bespoke parser for (Command Code, OpenCode Go, Cline, ZenMux, ...). Window
-  sensors are `sensor.<channel>_<window>_used` in percent, and `period_cost` /
+  sensors are `sensor.<channel>_<window>_used` in percent plus
+  `sensor.<channel>_<window>_reset` for the reset time; `period_cost` /
   `period_quota` from AxonHub show up as attributes.
 - **Older releases** (from v0.8.7, which introduced `Channel.providerQuotaStatus`)
   store a per-provider raw payload instead (`windows`, `rate_limit`,

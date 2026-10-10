@@ -546,14 +546,19 @@ async def test_normalized_limits_are_used(mock_axonhub: Any) -> None:
     # Same window twice, so names must be disambiguated by limit type.
     assert cycle.name == "Monthly subscription_cycle used"
     assert cycle.attributes["status"] == "warning"
-    assert cycle.attributes["next_reset_at"] == "2026-02-01T00:00:00Z"
     assert cycle.attributes["period_cost"] == 1.25
     assert cycle.attributes["period_quota"] == 5.0
+    # The per-limit reset is a real timestamp rather than a raw string.
+    assert cycle.reset_at is not None
+    assert cycle.reset_at.isoformat() == "2026-02-01T00:00:00+00:00"
+    assert cycle.reset_name == "Monthly subscription_cycle reset"
 
     image = channel.metric("limit_monthly_image")
     assert image is not None
     assert image.value == 10.0
     assert image.name == "Monthly image used"
+    # No reset for this limit in the payload, so no reset sensor is built.
+    assert image.reset_at is None
 
 
 async def test_partial_graphql_errors_are_tolerated(mock_axonhub: Any) -> None:
@@ -632,12 +637,21 @@ async def test_channel_quota_parsing(mock_axonhub: Any) -> None:
     assert [metric.key for metric in claude.metrics] == ["window_5h", "window_7d"]
     assert claude.metrics[0].value == 82.0
     assert claude.metrics[0].unit == "%"
-    assert claude.metrics[0].attributes["reset_at"].startswith("2026-01-01")
+    # Each Claude window resets on its own: 5h and 7d differ.
+    assert claude.metrics[0].reset_at is not None
+    assert claude.metrics[0].reset_at.isoformat() == "2026-01-01T00:00:00+00:00"
+    assert claude.metrics[1].reset_at is not None
+    assert claude.metrics[1].reset_at.isoformat() == "2026-01-07T00:00:00+00:00"
+    assert claude.metrics[0].attributes["reset"] == 1767225600
 
     codex = channels["channel_2"]
     assert [metric.key for metric in codex.metrics] == ["primary", "secondary"]
     assert codex.metrics[0].value == 43.5
     assert codex.metrics[0].attributes["limit_window_seconds"] == 18000
+    assert codex.metrics[0].reset_at is not None
+    assert codex.metrics[0].reset_at.isoformat() == "2026-01-01T00:00:00+00:00"
+    # The secondary window carries no reset_at in the payload, so it gets none.
+    assert codex.metrics[1].reset_at is None
 
     copilot = channels["channel_3"]
     assert sorted(metric.key for metric in copilot.metrics) == [
@@ -648,6 +662,8 @@ async def test_channel_quota_parsing(mock_axonhub: Any) -> None:
     assert premium is not None
     assert premium.value == 12.5
     assert premium.attributes["entitlement"] == 300.0
+    # Copilot reports remaining percent; the payload here has no reset field.
+    assert premium.reset_at is None
     completions = copilot.metric("snapshot_completions")
     assert completions is not None
     assert completions.value is None  # unlimited quota
@@ -656,7 +672,10 @@ async def test_channel_quota_parsing(mock_axonhub: Any) -> None:
     nanogpt = channels["channel_4"]
     assert [metric.key for metric in nanogpt.metrics] == ["window_weeklyinputtokens"]
     assert nanogpt.metrics[0].value == 10.0
-    assert nanogpt.metrics[0].attributes["reset_at"].startswith("2026-01-01")
+    # NanoGPT reports resetAt in milliseconds.
+    assert nanogpt.metrics[0].reset_at is not None
+    assert nanogpt.metrics[0].reset_at.isoformat() == "2026-01-01T00:00:00+00:00"
+    assert nanogpt.metrics[0].attributes["resetAt"] == 1767225600000
 
     # providerType wins over the channel type when they differ.
     opencode = channels["channel_8"]
@@ -740,3 +759,40 @@ def test_build_stats_tolerates_partial_payloads() -> None:
     assert stats.tokens_today.cache_hit_rate == 0.0
     assert stats.tokens_this_week.total == 0
     assert stats.tokens_this_week.cache_hit_rate is None
+
+
+def test_copilot_reset_epoch_unit_is_inferred() -> None:
+    """Copilot's snapshot reset field is accepted in seconds and milliseconds.
+
+    AxonHub copies ``quota_snapshots`` through verbatim and never reads
+    ``quota_reset_at`` itself, so the integration infers the epoch unit from
+    magnitude instead of assuming one and being wrong by a factor of 1000.
+    """
+    def reset_for(value: int) -> str | None:
+        channel = quota.build_channel_quota(
+            {
+                "id": "gid://axonhub/channel/9",
+                "name": "Copilot",
+                "type": "github_copilot",
+                "providerQuotaStatus": {
+                    "providerType": "github_copilot",
+                    "status": "available",
+                    "ready": True,
+                    "quotaData": {
+                        "quota_snapshots": {
+                            "premium_interactions": {
+                                "percent_remaining": 12.5,
+                                "quota_reset_at": value,
+                            }
+                        }
+                    },
+                },
+            }
+        )
+        assert channel is not None
+        metric = channel.metric("snapshot_premium_interactions")
+        assert metric is not None
+        return metric.reset_at.isoformat() if metric.reset_at else None
+
+    assert reset_for(1767225600) == "2026-01-01T00:00:00+00:00"
+    assert reset_for(1767225600000) == "2026-01-01T00:00:00+00:00"
