@@ -376,13 +376,9 @@ async def test_setup_creates_quota_entities(
     # The channel wide reset entity is gone: reset is per window now.
     assert hass.states.get("sensor.claude_max_next_quota_reset") is None
 
-    # Both percentages exist for every window, whichever side the provider
-    # reports, plus how much of the window is still ahead.
-    five_hour_remaining = hass.states.get("sensor.claude_max_5h_window_remaining")
-    assert five_hour_remaining is not None
-    assert five_hour_remaining.state == "18.0"
-    assert five_hour_remaining.attributes["unit_of_measurement"] == "%"
-    assert hass.states.get("sensor.claude_max_7d_window_remaining").state == "59.0"
+    # Windows expose the consumed side only; the remaining entity is gone.
+    assert hass.states.get("sensor.claude_max_5h_window_remaining") is None
+    assert hass.states.get("sensor.claude_max_7d_window_remaining") is None
 
     five_hour_time = hass.states.get("sensor.claude_max_5h_window_time_remaining")
     assert five_hour_time is not None
@@ -409,21 +405,18 @@ async def test_setup_creates_quota_entities(
         == "2026-01-07T00:00:00+00:00"
     )
 
-    # Copilot channel. Its snapshot reports *remaining* percent, so the reset
-    # entity is named after "remaining" rather than "used".
-    premium = hass.states.get("sensor.copilot_premium_interactions_remaining")
+    # Copilot channel. Its snapshot reports *remaining* percent (12.5), so the
+    # entity is inverted to the consumed side and carries the `_used` id; the
+    # remaining entity is gone like everywhere else.
+    premium = hass.states.get("sensor.copilot_premium_interactions_used")
     assert premium is not None
-    assert premium.state == "12.5"
+    assert premium.state == "87.5"
     assert premium.attributes["entitlement"] == 300.0
     assert (
         hass.states.get("sensor.copilot_premium_interactions_reset").state
         == "2026-01-01T00:00:00+00:00"
     )
-    # Copilot reports the remaining side, so the derived counterpart is `used`
-    # and the original entity keeps its name.
-    assert (
-        hass.states.get("sensor.copilot_premium_interactions_used").state == "87.5"
-    )
+    assert hass.states.get("sensor.copilot_premium_interactions_remaining") is None
 
     # Channels without a quota checker are ignored entirely.
     assert not [
@@ -482,6 +475,50 @@ async def test_legacy_next_reset_entity_is_removed(
     assert registry.async_get("sensor.claude_max_next_quota_reset") is None
     # The per window entities took its place.
     assert registry.async_get("sensor.claude_max_5h_window_reset") is not None
+
+
+async def test_legacy_remaining_entities_are_removed(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """The quota-remaining entities of 0.4.0 are cleaned up.
+
+    A derived one (Claude) and Copilot's primary one are registered on purpose:
+    the latter's unique id carries no ``remaining`` suffix, so cleanup has to
+    match the entity id too. ``_time_remaining`` must survive both.
+    """
+    entry = make_entry()
+    entry.add_to_hass(hass)
+
+    registry = er.async_get(hass)
+    for unique_id, object_id in (
+        # The derived counterpart Claude Code used to get.
+        (f"{entry.entry_id}_channel_1_window_5h_remaining", "claude_max_5h_window_remaining"),
+        # Copilot's primary entity, which was the remaining side.
+        (
+            f"{entry.entry_id}_channel_3_snapshot_premium_interactions",
+            "copilot_premium_interactions_remaining",
+        ),
+        # Must survive the cleanup.
+        (
+            f"{entry.entry_id}_channel_1_window_5h_time_remaining",
+            "claude_max_5h_window_time_remaining",
+        ),
+    ):
+        registry.async_get_or_create(
+            "sensor", DOMAIN, unique_id, config_entry=entry, suggested_object_id=object_id
+        )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert registry.async_get("sensor.claude_max_5h_window_remaining") is None
+    assert registry.async_get("sensor.copilot_premium_interactions_remaining") is None
+    # The time-remaining entity is a different entity and stays.
+    assert (
+        registry.async_get("sensor.claude_max_5h_window_time_remaining") is not None
+    )
+    # Copilot's percentage entity is now the consumed side.
+    assert registry.async_get("sensor.copilot_premium_interactions_used") is not None
 
 
 async def test_setup_creates_instance_statistics(

@@ -799,8 +799,8 @@ def test_copilot_reset_epoch_unit_is_inferred() -> None:
     assert reset_for(1767225600000) == "2026-01-01T00:00:00+00:00"
 
 
-def test_window_exposes_both_percentages_and_time_share() -> None:
-    """A window reports the used side, its remaining counterpart and time left."""
+def test_window_exposes_used_value_and_time_share() -> None:
+    """A window reports the consumed side plus how much of it is left."""
     start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
     metric = quota.QuotaMetric(
         key="window_5h",
@@ -812,8 +812,8 @@ def test_window_exposes_both_percentages_and_time_share() -> None:
     )
 
     assert metric.window_label == "5h window"
-    assert metric.counterpart_name == "5h window remaining"
-    assert metric.counterpart_value == 18.0
+    assert metric.used_name == "5h window used"
+    assert metric.used_value == 82.0
     assert metric.reset_name == "5h window reset"
     assert metric.time_remaining_name == "5h window time remaining"
 
@@ -831,8 +831,8 @@ def test_window_exposes_both_percentages_and_time_share() -> None:
     )
 
 
-def test_remaining_side_metric_gets_a_used_counterpart() -> None:
-    """Copilot reports remaining, so the derived counterpart is the used side."""
+def test_remaining_side_metric_reports_the_used_value() -> None:
+    """Copilot reports remaining, so the entity value is inverted to used."""
     metric = quota.QuotaMetric(
         key="snapshot_premium_interactions",
         name="premium_interactions remaining",
@@ -842,13 +842,21 @@ def test_remaining_side_metric_gets_a_used_counterpart() -> None:
     )
 
     assert metric.window_label == "premium_interactions"
-    assert metric.counterpart_name == "premium_interactions used"
-    assert metric.counterpart_value == 87.5
+    assert metric.used_name == "premium_interactions used"
+    assert metric.used_value == 87.5
     assert metric.reset_name == "premium_interactions reset"
 
 
-def test_no_window_no_percentages() -> None:
-    """Without a usable value the counterpart stays ``None`` instead of 100."""
+def test_no_window_no_percentage() -> None:
+    """Without a usable value the consumed side stays ``None``, not 100."""
     metric = quota.QuotaMetric(key="k", name="W used", value=None)
+    assert metric.used_value is None
 
-    assert metric.counterpart_value is None
+    # ...and an unlimited Copilot snapshot does not become "0% used" either.
+    unlimited = quota.QuotaMetric(
+        key="snapshot_completions",
+        name="completions remaining",
+        value=None,
+        used=False,
+    )
+    assert unlimited.used_value is None

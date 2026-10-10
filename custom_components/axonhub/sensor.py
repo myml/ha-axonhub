@@ -60,14 +60,32 @@ async def async_setup_entry(
 def _async_remove_legacy_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Drop entities earlier releases registered for this entry.
 
-    Until resets became per window, every channel had one ``_next_reset``
-    entity. Nothing provides it any more, and Home Assistant would otherwise
-    keep it in the registry as a permanently unavailable leftover.
+    Two generations of leftovers accumulate here, and Home Assistant would
+    otherwise keep each of them in the registry as a permanently unavailable
+    entity:
+
+    * ``_next_reset`` — the channel wide reset entity, until resets became per
+      window.
+    * ``_remaining`` — the quota-remaining entity, until windows settled on
+      exposing the consumed side only. It has to be matched on the entity id as
+      well: for Copilot the remaining side *was* the primary entity, so its
+      unique id carries no such suffix. ``_time_remaining`` is a different
+      entity and must survive, hence the extra check.
     """
     registry = er.async_get(hass)
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if entity.unique_id.endswith("_next_reset"):
+        if entity.unique_id.endswith("_next_reset") or _is_removed_remaining(entity):
             registry.async_remove(entity.entity_id)
+
+
+def _is_removed_remaining(entity: er.RegistryEntry) -> bool:
+    """Return True for a leftover quota-remaining entity."""
+    for identifier in (entity.unique_id, entity.entity_id):
+        if identifier.endswith("_remaining") and not identifier.endswith(
+            "_time_remaining"
+        ):
+            return True
+    return False
 
 
 def _build_instance_entities(
@@ -120,19 +138,15 @@ def _build_entities(
             coordinator, channel_key
         )
         for metric in channel.metrics:
-            entities[f"{channel_key}_metric_{metric.key}"] = AxonHubQuotaMetricSensor(
-                coordinator, channel_key, metric.key
-            )
-            # Both percentages of a window are always exposed: the builder names
-            # the side the provider reports, this adds the opposite one. Skipped
-            # without a number, otherwise it would sit at `unknown` forever.
-            if metric.value is not None:
-                opposite = "remaining" if metric.used else "used"
-                entities[f"{channel_key}_metric_{metric.key}_{opposite}"] = (
-                    AxonHubQuotaCounterpartSensor(
-                        coordinator, channel_key, metric.key, opposite
-                    )
+            # Every window exposes the consumed side only. Copilot reports the
+            # remaining side instead, so its entity shows the derived consumed
+            # value under the `_used` unique id 0.4.0 already registered for it.
+            suffix = "" if metric.used else "_used"
+            entities[f"{channel_key}_metric_{metric.key}{suffix}"] = (
+                AxonHubQuotaMetricSensor(
+                    coordinator, channel_key, metric.key, suffix=suffix
                 )
+            )
             # A window only gets a reset entity when the provider actually
             # reported one for it; otherwise it would sit at `unknown` forever.
             if metric.reset_at is not None:
@@ -255,15 +269,35 @@ class AxonHubMetricEntity(AxonHubEntity):
 
 
 class AxonHubQuotaMetricSensor(AxonHubMetricEntity, SensorEntity):
-    """One quota window reported by the provider (utilization or remaining)."""
+    """How much of one quota window has been used, in percent.
+
+    Every window reports the consumed side here, whether the provider reported
+    utilisation (Claude Code, Codex, NanoGPT, and the normalized ``_limits``)
+    or the remaining headroom (Copilot's snapshots), so a single threshold
+    automation works across providers.
+    """
 
     _attr_state_class = SensorStateClass.MEASUREMENT
 
+    def __init__(
+        self,
+        coordinator: AxonHubQuotaCoordinator,
+        channel_key: str,
+        metric_key: str,
+        suffix: str = "",
+    ) -> None:
+        """Initialize the quota percentage sensor."""
+        super().__init__(coordinator, channel_key, metric_key, suffix=suffix)
+
+    def _entity_name(self, metric: QuotaMetric) -> str:
+        """Return the consumed side's entity name."""
+        return metric.used_name
+
     @property
     def native_value(self) -> float | None:
-        """Return the metric value."""
+        """Return how much of the window is used."""
         metric = self._metric
-        return metric.value if metric is not None else None
+        return metric.used_value if metric is not None else None
 
     @property
     def native_unit_of_measurement(self) -> str | None:
@@ -333,42 +367,9 @@ class AxonHubQuotaResetSensor(AxonHubMetricEntity, SensorEntity):
             return {}
 
         attributes = self._base_attributes(metric)
-        attributes["value"] = metric.value
+        attributes["value"] = metric.used_value
         attributes["unit"] = metric.unit
         return attributes
-
-
-class AxonHubQuotaCounterpartSensor(AxonHubMetricEntity, SensorEntity):
-    """The opposite percentage of one quota window.
-
-    Providers report either the consumed or the remaining side of a window
-    (Copilot reports remaining), so this fills in whichever side is missing and
-    leaves every window with both ``used`` and ``remaining`` entities.
-    """
-
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_icon = "mdi:percent"
-
-    def __init__(
-        self,
-        coordinator: AxonHubQuotaCoordinator,
-        channel_key: str,
-        metric_key: str,
-        opposite: str,
-    ) -> None:
-        """Initialize the counterpart percentage sensor."""
-        super().__init__(coordinator, channel_key, metric_key, suffix=f"_{opposite}")
-
-    def _entity_name(self, metric: QuotaMetric) -> str:
-        """Return the opposite side's entity name."""
-        return metric.counterpart_name
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the opposite percentage."""
-        metric = self._metric
-        return metric.counterpart_value if metric is not None else None
 
 
 class AxonHubQuotaTimeRemainingSensor(AxonHubMetricEntity, SensorEntity):

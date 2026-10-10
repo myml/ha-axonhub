@@ -86,42 +86,40 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
 | `sensor.<渠道>_quota_status` | 总体状态：`available`、`warning`、`exhausted` 或 `unknown`。 |
 | `binary_sensor.<渠道>_quota_ready` | 渠道是否仍可服务（状态为 `available` 或 `warning` 时为 `on`）。 |
 
-各供应商的窗口传感器：
+各供应商的窗口传感器（**都是已用百分比**）：
 
-| 供应商 | 实体 | 含义 |
-|--------|------|------|
-| Claude Code | `sensor.<渠道>_5h_window_used`、`sensor.<渠道>_7d_window_used`、`sensor.<渠道>_overage_window_used` | 5 小时、7 天与 overage 限流窗口的**已用百分比**。 |
-| Codex | `sensor.<渠道>_primary_window_used`、`sensor.<渠道>_secondary_window_used` | 主/次限流窗口的已用百分比。 |
-| GitHub Copilot | `sensor.<渠道>_<quota>_remaining`（例如 `sensor.copilot_premium_interactions_remaining`） | 各配额快照的**剩余百分比**。没有快照的账号按 `limited_user_quotas` / `total_quotas` 计算。 |
-| NanoGPT | `sensor.<渠道>_weekly_input_tokens_used`、`sensor.<渠道>_daily_input_tokens_used`、`sensor.<渠道>_daily_images_used` | 各订阅窗口的已用百分比。 |
+| 供应商 | 实体 |
+|--------|------|
+| Claude Code | `sensor.<渠道>_5h_window_used`、`sensor.<渠道>_7d_window_used`、`sensor.<渠道>_overage_window_used` |
+| Codex | `sensor.<渠道>_primary_window_used`、`sensor.<渠道>_secondary_window_used` |
+| GitHub Copilot | `sensor.<渠道>_<quota>_used`（例如 `sensor.copilot_premium_interactions_used`）。没有快照的账号按 `limited_user_quotas` / `total_quotas` 计算。 |
+| NanoGPT | `sensor.<渠道>_weekly_input_tokens_used`、`sensor.<渠道>_daily_input_tokens_used`、`sensor.<渠道>_daily_images_used` |
 
-**每个窗口的完整四面**：供应商各自的窗口独立重置（Claude Code 的 5 小时窗口和 7 天窗口不会
-同时到期），因此每个窗口最多有四个实体：
+**每个窗口的三个实体**：供应商各自的窗口独立重置（Claude Code 的 5 小时窗口和 7 天窗口不会
+同时到期），因此每个窗口最多有三个实体：
 
 | 实体 | 说明 |
 |------|------|
 | `sensor.<渠道>_<窗口>_used` | **额度已用百分比**。 |
-| `sensor.<渠道>_<窗口>_remaining` | **额度剩余百分比**（= 100 − 已用）。 |
 | `sensor.<渠道>_<窗口>_reset` | **重置时间**（`device_class: timestamp`，例如 `sensor.claude_max_5h_window_reset`）。 |
 | `sensor.<渠道>_<窗口>_time_remaining` | **窗口时间剩余占比**：距离重置还剩多少时间，占整个窗口长度的百分比。 |
 
 说明：
 
-- **已用与剩余总是成对出现**，无论供应商上报哪一侧：Copilot 的 `quota_snapshots` 报的是
-  `percent_remaining`，所以它的主实体是 `_remaining`，集成自动补出对应的 `_used`
-  （`sensor.copilot_premium_interactions_used` = 100 − 剩余）；其他供应商报已用，就补出
-  `_remaining`。两侧都不会改名，`_used` 与 `_remaining` 的数值始终互补。
+- **统一用「已用」表示额度，不提供「剩余」实体**（剩余 = 100 − 已用）。Copilot 的
+  `quota_snapshots` 上报的本来是 `percent_remaining`，集成会**反转成已用**再暴露，例如剩余
+  12.5% 对应 `sensor.copilot_premium_interactions_used` = `87.5`。这样阈值自动化在所有供应商
+  之间通用，不必为 Copilot 反向写条件。
 - 百分比、重置时间、时间占比是**三个不同的实体**：Home Assistant 每个实体只能有一个状态和
   一个 `device_class`，`%` 与时间戳无法共用一个状态。想在卡片上一行显示多个值，可读
-  `_reset` 实体的 `value` / `unit` 属性（配对百分比），或 `_used` 实体的 `next_reset_at`
-  属性（ISO 8601 字符串）。
+  `_reset` 实体的 `value` / `unit` 属性（配对的已用百分比），或 `_used` 实体的
+  `next_reset_at` 属性（ISO 8601 字符串）。
 - `_time_remaining` 需要知道窗口的**起点**：优先用 AxonHub 归一化 `_limits` 里的 `periodStart`，
   没有时按窗口的固定长度从重置时间反推（5h / 7d / 30d / daily / weekly，Codex 用
   `limit_window_seconds`）。因此**账单周期类窗口（如 Copilot 的月度重置日）不会产生这个实体**
   ——它的长度无从确定。
 - 只有供应商真的上报了某个窗口时才会创建对应实体。例如 Claude Code 的 `overage` 窗口若为空就
   不会产生实体；Codex 没给 `reset_at` 的窗口也不会有 `_reset` 实体。
-- `<渠道>` 是 AxonHub 中渠道名转成的 slug，例如 `sensor.claude_max_5h_window_used`。
 - `<渠道>` 是 AxonHub 中渠道名转成的 slug，例如 `sensor.claude_max_5h_window_used`。
 - 状态实体在 `quota_data` 属性里带有 AxonHub 返回的原始数据；最近一次检查失败时还会有
   `error` 属性，适合用来做模板传感器。它的 `next_reset_at` 属性是 AxonHub 计算出的**渠道级**
@@ -236,9 +234,8 @@ automation:
 - **AxonHub v1.0.0-beta8 及以上**会把各 provider 的额度统一归一化到 `quotaData._limits`
   数组（`window`、`usageRatio`，与 provider 无关）。集成优先使用它，这也是它能覆盖没有专门
   解析器的 provider（Command Code、OpenCode Go、Cline、ZenMux 等）的原因。窗口传感器为
-  `sensor.<渠道>_<窗口>_used` / `_remaining`（已用与剩余百分比）、`_reset`（重置时间）与
-  `_time_remaining`（窗口时间剩余占比），AxonHub 的 `period_cost` / `period_quota`
-  会作为属性暴露。
+  `sensor.<渠道>_<窗口>_used`（已用百分比）、`_reset`（重置时间）与 `_time_remaining`
+  （窗口时间剩余占比），AxonHub 的 `period_cost` / `period_quota` 会作为属性暴露。
 - **更早的版本**（自 v0.8.7 引入 `Channel.providerQuotaStatus` 起）存的是各 provider 的原始
   payload（`windows`、`rate_limit`、`quota_snapshots` 等），集成按 provider 类型分别解析。
 

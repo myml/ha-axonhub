@@ -92,9 +92,8 @@ class QuotaMetric:
     """Whether :attr:`value` is consumption (``True``) or remaining headroom.
 
     Every provider reports utilisation except GitHub Copilot, whose snapshots
-    carry ``percent_remaining``. The flag decides which of the two percentages
-    is the primary entity (named by the builder) and which is the derived
-    counterpart, so both are exposed without the builders repeating labels.
+    carry ``percent_remaining``. Windows expose the consumed side either way,
+    so this flag tells :attr:`used_value` whether it has to invert the number.
     """
 
     period_start: datetime | None = None
@@ -123,22 +122,27 @@ class QuotaMetric:
         return f"{self.window_label} reset"
 
     @property
-    def counterpart_name(self) -> str:
-        """Return the entity name of the opposite percentage.
+    def used_name(self) -> str:
+        """Return the entity name of the consumed side.
 
-        A window that reports utilisation pairs with a ``remaining`` entity and
-        vice versa, so both percentages exist whichever way the provider
-        reports it (Copilot's snapshots are the remaining side).
+        Every window exposes the consumed side, so this is the entity the
+        percentage sensor is named after whichever way the provider reports it
+        (Copilot's snapshots carry the remaining side).
         """
-        suffix = _REMAINING_SUFFIX if self.used else _USED_SUFFIX
-        return f"{self.window_label}{suffix}"
+        return f"{self.window_label}{_USED_SUFFIX}"
 
     @property
-    def counterpart_value(self) -> float | None:
-        """Return the opposite percentage, ``None`` without a usable value."""
+    def used_value(self) -> float | None:
+        """Return the consumed percentage.
+
+        Providers report utilisation directly except GitHub Copilot, whose
+        remaining percentage is inverted here so every window reads the same
+        way. ``None`` when the provider reports no usable number, which leaves
+        the entity at ``unknown`` rather than claiming nothing was used.
+        """
         if self.value is None:
             return None
-        return _round(100 - self.value)
+        return self.value if self.used else _round(100 - self.value)
 
     @property
     def time_remaining_name(self) -> str:
