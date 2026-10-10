@@ -238,12 +238,21 @@ class AxonHubQuotaStatusSensor(AxonHubEntity, SensorEntity):
 class AxonHubMetricEntity(AxonHubEntity):
     """Base class for the entities derived from one quota window.
 
-    A window produces two entities — the percentage and, when the provider
-    reports one, its reset timestamp — so the shared lookup and the name
-    refresh live here. Home Assistant allows only a single state and a single
-    device class per entity, which is why utilization and reset time cannot
-    share one.
+    A window produces several entities (the percentage, its reset time and
+    sometimes a cost), so the shared lookup and the translated naming live here.
+    Home Assistant allows only a single state and a single device class per
+    entity, which is why utilization, reset time and money cannot share one.
+
+    The name is **not** set through ``_attr_name``: Home Assistant returns that
+    attribute verbatim and skips translation entirely when it exists, so these
+    entities name themselves through a translation key plus a ``{window}``
+    placeholder holding the provider's own window identifier. The key differs
+    for rate limit windows and for the other quota buckets, so both keep their
+    exact English wording while other languages can translate it.
     """
+
+    #: Which translation key to use, set by every concrete subclass.
+    _name_slot: str = "used"
 
     def __init__(
         self,
@@ -268,15 +277,20 @@ class AxonHubMetricEntity(AxonHubEntity):
             return None
         return channel.metric(self._metric_key)
 
-    def _entity_name(self, metric: QuotaMetric) -> str:
-        """Return the entity name for the metric."""
-        return metric.name
-
     def _sync_name(self) -> None:
-        """Set the entity name from the metric."""
+        """Point the entity at the translation key for its window.
+
+        Runs on every coordinator update because a window may only show up in a
+        later payload. Leaving the previous key in place when the metric is
+        momentarily absent keeps the entity named rather than blank.
+        """
         metric = self._metric
-        if metric is not None:
-            self._attr_name = self._entity_name(metric)
+        if metric is None:
+            return
+
+        kind = "window" if metric.is_rate_limit_window else "limit"
+        self._attr_translation_key = f"quota_{kind}_{self._name_slot}"
+        self._attr_translation_placeholders = {"window": metric.window_token}
 
     def _base_attributes(self, metric: QuotaMetric) -> dict[str, Any]:
         """Return the window attributes shared by both entities."""
@@ -288,7 +302,7 @@ class AxonHubMetricEntity(AxonHubEntity):
         return attributes
 
     def _handle_coordinator_update(self) -> None:
-        """Refresh the entity name, the metric name may only appear later."""
+        """Refresh the translation key, the metric may only appear later."""
         self._sync_name()
         super()._handle_coordinator_update()
 
@@ -314,9 +328,7 @@ class AxonHubQuotaMetricSensor(AxonHubMetricEntity, SensorEntity):
         """Initialize the quota percentage sensor."""
         super().__init__(coordinator, channel_key, metric_key, suffix=suffix)
 
-    def _entity_name(self, metric: QuotaMetric) -> str:
-        """Return the consumed side's entity name."""
-        return metric.used_name
+    _name_slot = "used"
 
     @property
     def native_value(self) -> float | None:
@@ -374,9 +386,7 @@ class AxonHubQuotaResetSensor(AxonHubMetricEntity, SensorEntity):
         """Initialize the reset sensor."""
         super().__init__(coordinator, channel_key, metric_key, suffix="_reset")
 
-    def _entity_name(self, metric: QuotaMetric) -> str:
-        """Return the window name with a ``reset`` suffix."""
-        return metric.reset_name
+    _name_slot = "reset"
 
     @property
     def native_value(self) -> datetime | None:
@@ -425,9 +435,7 @@ class AxonHubQuotaCostSensor(AxonHubMetricEntity, SensorEntity):
         super().__init__(coordinator, channel_key, metric_key, suffix="_cost")
         self._attr_native_unit_of_measurement = currency
 
-    def _entity_name(self, metric: QuotaMetric) -> str:
-        """Return the window's cost entity name."""
-        return metric.cost_name
+    _name_slot = "cost"
 
     @property
     def native_value(self) -> float | None:
@@ -469,9 +477,7 @@ class AxonHubQuotaTimeRemainingSensor(AxonHubMetricEntity, SensorEntity):
             coordinator, channel_key, metric_key, suffix="_time_remaining"
         )
 
-    def _entity_name(self, metric: QuotaMetric) -> str:
-        """Return the window's remaining-time entity name."""
-        return metric.time_remaining_name
+    _name_slot = "time_remaining"
 
     @property
     def native_value(self) -> float | None:

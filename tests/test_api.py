@@ -557,7 +557,10 @@ async def test_normalized_limits_are_used(mock_axonhub: Any) -> None:
     # The per-limit reset is a real timestamp rather than a raw string.
     assert cycle.reset_at is not None
     assert cycle.reset_at.isoformat() == "2026-02-01T00:00:00+00:00"
-    assert cycle.reset_name == "Monthly subscription_cycle reset"
+    # A bucket style window, so it names itself through the `limit` key and
+    # keeps the provider's own identifier as the placeholder.
+    assert cycle.is_rate_limit_window is False
+    assert cycle.window_token == "Monthly subscription_cycle"
 
     image = channel.metric("limit_monthly_image")
     assert image is not None
@@ -817,10 +820,12 @@ def test_window_exposes_used_value_and_time_share() -> None:
     )
 
     assert metric.window_label == "5h window"
-    assert metric.used_name == "5h window used"
     assert metric.used_value == 82.0
-    assert metric.reset_name == "5h window reset"
-    assert metric.time_remaining_name == "5h window time remaining"
+    # A rate limit window drops the "window" word from the placeholder and lets
+    # the translation template supply it, so English stays "5h window used"
+    # while Chinese can read "5h 窗口已用".
+    assert metric.is_rate_limit_window is True
+    assert metric.window_token == "5h"
 
     assert metric.time_remaining_percent(start) == 100.0
     assert metric.time_remaining_percent(start + timedelta(hours=2)) == 60.0
@@ -847,9 +852,9 @@ def test_remaining_side_metric_reports_the_used_value() -> None:
     )
 
     assert metric.window_label == "premium_interactions"
-    assert metric.used_name == "premium_interactions used"
     assert metric.used_value == 87.5
-    assert metric.reset_name == "premium_interactions reset"
+    assert metric.is_rate_limit_window is False
+    assert metric.window_token == "premium_interactions"
 
 
 def test_no_window_no_percentage() -> None:

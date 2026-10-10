@@ -99,6 +99,30 @@
       },
       "tokens_all_time_cache_hit_rate": {
         "name": "Cache hit rate all time"
+      },
+      "quota_window_used": {
+        "name": "{window} window used"
+      },
+      "quota_window_reset": {
+        "name": "{window} window reset"
+      },
+      "quota_window_time_remaining": {
+        "name": "{window} window time remaining"
+      },
+      "quota_window_cost": {
+        "name": "{window} window cost"
+      },
+      "quota_limit_used": {
+        "name": "{window} used"
+      },
+      "quota_limit_reset": {
+        "name": "{window} reset"
+      },
+      "quota_limit_time_remaining": {
+        "name": "{window} time remaining"
+      },
+      "quota_limit_cost": {
+        "name": "{window} cost"
       }
     },
     "binary_sensor": {

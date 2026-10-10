@@ -99,6 +99,30 @@
       },
       "tokens_all_time_cache_hit_rate": {
         "name": "累计缓存命中率"
+      },
+      "quota_window_used": {
+        "name": "{window} 窗口已用"
+      },
+      "quota_window_reset": {
+        "name": "{window} 窗口重置时间"
+      },
+      "quota_window_time_remaining": {
+        "name": "{window} 窗口时间剩余"
+      },
+      "quota_window_cost": {
+        "name": "{window} 窗口花费"
+      },
+      "quota_limit_used": {
+        "name": "{window} 已用"
+      },
+      "quota_limit_reset": {
+        "name": "{window} 重置时间"
+      },
+      "quota_limit_time_remaining": {
+        "name": "{window} 时间剩余"
+      },
+      "quota_limit_cost": {
+        "name": "{window} 花费"
       }
     },
     "binary_sensor": {

@@ -310,6 +310,34 @@ python -m venv .venv
 CI 还会跑 `hassfest` 和 HACS 校验，见
 [`.github/workflows/validate.yml`](.github/workflows/validate.yml)。
 
+## 国际化
+
+**界面语言跟 Home Assistant 走**，无需在集成里配置。目前内置 **英语**（`translations/en.json`）
+与**简体中文**（`translations/zh-Hans.json`）。
+
+- 所有实体名（包括每个窗口的 `_used` / `_reset` / `_time_remaining` / `_cost`）都来自翻译表，
+  会随 HA 语言变化。例如同一个实体在英文下是 `5h window used`，在中文下是 `5h 窗口已用`。
+- 窗口标识（`5h`、`Primary`、`premium_interactions`）**保持 AxonHub 原样不翻译**，因为它们是
+  供应商的术语；翻译的是其后的部分（已用 / 重置时间 / 时间剩余 / 花费）。
+- **实体 ID 不随语言变化**，始终是英文。Home Assistant 只在语言属于
+  `homeassistant.generated.languages.NATIVE_ENTITY_IDS` 时用本地化名字生成实体 ID，而
+  `zh-Hans` / `zh-Hant` 都不在其中，因此中文用户的实体 ID 与文档示例一致。
+- **其他语言自动回退到英文**：HA 加载翻译时始终先装载英文作为基底再叠加目标语言，所以只提供
+  这两种语言不会让德语等用户看到无名实体。
+
+### 添加一种语言
+
+1. 复制 `custom_components/axonhub/translations/en.json` 为
+   `custom_components/axonhub/translations/<语言代码>.json`（如 `ja.json`、`de.json`）。
+2. 翻译其中的 `entity` / `config` / `options` / `services` 各段。
+3. **占位符必须原样保留**：`{window}` 等花括号内容一个都不能改，否则 HA 的
+   `_validate_placeholders` 会静默丢弃该条翻译并回退英文，只留一条 error 日志。
+4. `strings.json` 是英文基准，不要改它来加语言。
+
+`zh-Hans.json` 里的 `quota_window_*` / `quota_limit_*` 两组键的区别：前者用于限流窗口
+（Claude Code 的 5h/7d、Codex 的 primary/secondary），后者用于其他额度桶（Copilot 快照、
+NanoGPT 的 token 窗口、账单周期）。
+
 ## 发布
 
 HACS 安装的是 `custom_components/axonhub/manifest.json` 里声明的 `version`，而**检查更新**

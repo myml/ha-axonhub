@@ -758,3 +758,60 @@ async def test_instance_ratios_are_entities(
     # All four token windows get their own rate.
     for window in ("today", "this_week", "this_month", "all_time"):
         assert hass.states.get(f"sensor.axon_local_8090_cache_hit_rate_{window}")
+
+
+async def test_window_entity_names_follow_the_language(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """Window names are translated, while entity ids stay English.
+
+    The name comes from a translation key with the provider's window identifier
+    as a placeholder, so Chinese reads "5h 窗口已用" without renaming anything:
+    Home Assistant builds entity ids from the translations of the language in
+    ``languages.NATIVE_ENTITY_IDS`` (zh-Hans is not one), which keeps ids
+    stable and English for every user.
+    """
+    hass.config.language = "zh-Hans"
+
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    expected = {
+        "sensor.claude_max_5h_window_used": "Claude Max 5h 窗口已用",
+        "sensor.claude_max_5h_window_reset": "Claude Max 5h 窗口重置时间",
+        "sensor.claude_max_5h_window_time_remaining": "Claude Max 5h 窗口时间剩余",
+        "sensor.chatgpt_plus_primary_window_used": "ChatGPT Plus Primary 窗口已用",
+        # A bucket style window keeps its provider identifier verbatim.
+        "sensor.copilot_premium_interactions_used": (
+            "Copilot premium_interactions 已用"
+        ),
+    }
+    for entity_id, name in expected.items():
+        state = hass.states.get(entity_id)
+        assert state is not None, entity_id
+        assert state.attributes["friendly_name"] == name
+
+
+async def test_window_entity_names_fall_back_to_english(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """A language without its own file reads the English names.
+
+    Home Assistant always loads English as the base and overlays the requested
+    language on top, so shipping only en + zh-Hans does not leave other
+    languages with unnamed entities.
+    """
+    hass.config.language = "de"
+
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    used = hass.states.get("sensor.claude_max_5h_window_used")
+    assert used is not None
+    assert used.attributes["friendly_name"] == "Claude Max 5h window used"
+    # ...and the entity id is still the English one.
+    assert hass.states.get("sensor.claude_max_5h_window_used") is not None

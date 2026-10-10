@@ -331,6 +331,40 @@ The test suite has two parts:
 CI additionally runs `hassfest` and the HACS validation action, see
 [`.github/workflows/validate.yml`](.github/workflows/validate.yml).
 
+## Translations
+
+Entity names **follow the Home Assistant language**, with nothing to configure in the
+integration. English (`translations/en.json`) and Simplified Chinese
+(`translations/zh-Hans.json`) ship today.
+
+- Every entity name comes from the translation tables, including each window's `_used` /
+  `_reset` / `_time_remaining` / `_cost`, so it changes with the HA language: the same
+  entity reads `5h window used` in English and `5h 窗口已用` in Chinese.
+- The window identifier (`5h`, `Primary`, `premium_interactions`) is **kept exactly as
+  AxonHub reports it**, since it is provider terminology; only the part after it is
+  translated (used / reset / time remaining / cost).
+- **Entity ids never change with the language** and stay English. Home Assistant only
+  builds localized entity ids for languages listed in
+  `homeassistant.generated.languages.NATIVE_ENTITY_IDS`, which neither `zh-Hans` nor
+  `zh-Hant` is, so Chinese users get the same ids as the examples in this file.
+- **Any other language falls back to English**: HA always loads English as the base and
+  overlays the requested language on top, so shipping only these two never leaves, say, a
+  German user with unnamed entities.
+
+### Adding a language
+
+1. Copy `custom_components/axonhub/translations/en.json` to
+   `custom_components/axonhub/translations/<language>.json` (for example `ja.json`).
+2. Translate its `entity` / `config` / `options` / `services` sections.
+3. **Keep every placeholder intact**: the contents of `{window}` and friends must not
+   change, or HA's `_validate_placeholders` silently drops that translation in favour of
+   English and only logs an error.
+4. `strings.json` is the English source of truth; do not add languages there.
+
+The two key families differ by window kind: `quota_window_*` covers rate limit windows
+(Claude Code's 5h/7d, Codex's primary/secondary) while `quota_limit_*` covers the other
+quota buckets (Copilot snapshots, NanoGPT's token windows, a billing cycle).
+
 ## Release
 
 HACS installs the version declared in `custom_components/axonhub/manifest.json` and

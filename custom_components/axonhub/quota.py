@@ -48,6 +48,12 @@ STATUS_UNKNOWN = "unknown"
 _USED_SUFFIX = " used"
 _REMAINING_SUFFIX = " remaining"
 
+# The word that marks a provider rate limit window ("5h window", "Primary
+# window"). Entity names are built from translations, and the placeholder keeps
+# the provider's identifier only, so this word is supplied by each language's
+# template instead.
+_WINDOW_WORD = " window"
+
 # Fixed window lengths, used to derive a window's start when the provider only
 # reports its reset. The normalized `_limits` payload carries `periodStart`
 # directly, but the per-provider raw payloads do not, and without a start there
@@ -121,23 +127,29 @@ class QuotaMetric:
         return self.name
 
     @property
-    def reset_name(self) -> str:
-        """Return the entity name of this window's reset timestamp.
+    def window_token(self) -> str:
+        """Return the provider's own identifier for this window.
 
-        Derived from :attr:`name` so a window always pairs ``<window> used``
-        with ``<window> reset`` without every builder repeating the label.
+        This is what lands in the ``{window}`` translation placeholder, so it is
+        deliberately left as the provider names it (``5h``, ``Primary``,
+        ``premium_interactions``, ``Daily images``) rather than translated.
         """
-        return f"{self.window_label} reset"
+        label = self.window_label
+        if label.endswith(_WINDOW_WORD):
+            return label[: -len(_WINDOW_WORD)]
+        return label
 
     @property
-    def used_name(self) -> str:
-        """Return the entity name of the consumed side.
+    def is_rate_limit_window(self) -> bool:
+        """Whether this window is one of the provider's rate limit windows.
 
-        Every window exposes the consumed side, so this is the entity the
-        percentage sensor is named after whichever way the provider reports it
-        (Copilot's snapshots carry the remaining side).
+        Rate limit windows (Claude Code's 5h/7d, Codex's primary/secondary) read
+        naturally as "<token> window ...", while the other quota buckets
+        (Copilot snapshots, NanoGPT's token windows, a billing cycle) are
+        already descriptive. The distinction picks the translation key, which is
+        what lets both keep their exact English wording.
         """
-        return f"{self.window_label}{_USED_SUFFIX}"
+        return self.window_label.endswith(_WINDOW_WORD)
 
     @property
     def used_value(self) -> float | None:
@@ -151,16 +163,6 @@ class QuotaMetric:
         if self.value is None:
             return None
         return self.value if self.used else _round(100 - self.value)
-
-    @property
-    def time_remaining_name(self) -> str:
-        """Return the entity name of the window's remaining-time share."""
-        return f"{self.window_label} time remaining"
-
-    @property
-    def cost_name(self) -> str:
-        """Return the entity name of the window's accumulated cost."""
-        return f"{self.window_label} cost"
 
     def time_remaining_percent(self, now: datetime) -> float | None:
         """Return how much of the window is left, in percent.
