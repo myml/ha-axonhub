@@ -3,7 +3,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+# `.venv/` plus the `.venv-*` variants used to reproduce CI on another HA
+# version. uv drops its own `*` .gitignore inside a venv, which hides the
+# directory only by accident — be explicit instead.
 .venv/
+.venv-*/
 venv/
 
 # Home Assistant
