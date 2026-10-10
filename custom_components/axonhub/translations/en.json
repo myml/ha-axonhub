@@ -106,8 +106,8 @@
       "quota_window_reset": {
         "name": "{window} window reset"
       },
-      "quota_window_time_remaining": {
-        "name": "{window} window time remaining"
+      "quota_window_time_elapsed": {
+        "name": "{window} window time elapsed"
       },
       "quota_window_cost": {
         "name": "{window} window cost"
@@ -118,8 +118,8 @@
       "quota_limit_reset": {
         "name": "{window} reset"
       },
-      "quota_limit_time_remaining": {
-        "name": "{window} time remaining"
+      "quota_limit_time_elapsed": {
+        "name": "{window} time elapsed"
       },
       "quota_limit_cost": {
         "name": "{window} cost"

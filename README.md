@@ -100,25 +100,33 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
 
 | 实体 | 说明 |
 |------|------|
-| `sensor.<渠道>_<窗口>_used` | **额度已用百分比**。 |
+| `sensor.<渠道>_<窗口>_used` | **已用额度**：本窗口额度用掉了多少，百分比。 |
 | `sensor.<渠道>_<窗口>_reset` | **重置时间**（`device_class: timestamp`，例如 `sensor.claude_max_5h_window_reset`）。 |
-| `sensor.<渠道>_<窗口>_time_remaining` | **窗口时间剩余占比**：距离重置还剩多少时间，占整个窗口长度的百分比。 |
+| `sensor.<渠道>_<窗口>_time_elapsed` | **已用时间**：窗口时间过去了多少，占整个窗口长度的百分比。 |
 | `sensor.<渠道>_<窗口>_cost` | **本窗口已花费金额**（`device_class: monetary`），仅当 AxonHub 能定价时出现。 |
 
 说明：
 
-- **统一用「已用」表示额度，不提供「剩余」实体**（剩余 = 100 − 已用）。Copilot 的
+- **统一用「已用」表示，不提供「剩余」实体**（剩余 = 100 − 已用）。Copilot 的
   `quota_snapshots` 上报的本来是 `percent_remaining`，集成会**反转成已用**再暴露，例如剩余
   12.5% 对应 `sensor.copilot_premium_interactions_used` = `87.5`。这样阈值自动化在所有供应商
   之间通用，不必为 Copilot 反向写条件。
-- 百分比、重置时间、时间占比、金额是**四个不同的实体**：Home Assistant 每个实体只能有一个状态
-  和一个 `device_class`，`%`、时间戳与金额无法共用一个状态。想在卡片上一行显示多个值，可读
-  `_reset` 实体的 `value` / `unit` 属性（配对的已用百分比），或 `_used` 实体的
+- **配额和时间都报「已用」，两者可以直接比**：`_used` 是额度用掉的比例，`_time_elapsed` 是
+  窗口时间过去的比例。`已用额度 82%` + `已用时间 46%` 说明这个窗口会在重置前用尽；
+  同样 82% 但已用时间 90% 则属正常。这是 AxonHub 前端 `severity = u * (u / d)` 的同一个思路，
+  但集成只给原始数值，不替你算告警级别。
+- 已用额度、重置时间、已用时间、金额是**四个不同的实体**：Home Assistant 每个实体只能有一个
+  状态和一个 `device_class`，`%`、时间戳与金额无法共用一个状态。想在卡片上一行显示多个值，可读
+  `_reset` 实体的 `value` / `unit` 属性（配对的已用额度），或 `_used` 实体的
   `next_reset_at` 属性（ISO 8601 字符串）。
-- `_time_remaining` 需要知道窗口的**起点**：优先用 AxonHub 归一化 `_limits` 里的 `periodStart`，
+- `_time_elapsed` 需要知道窗口的**起点**：优先用 AxonHub 归一化 `_limits` 里的 `periodStart`，
   没有时按窗口的固定长度从重置时间反推（5h / 7d / 30d / daily / weekly，Codex 用
   `limit_window_seconds`）。因此**账单周期类窗口（如 Copilot 的月度重置日）不会产生这个实体**
   ——它的长度无从确定。
+- **从 0.7 及更早版本升级需要注意**：窗口时间实体原本叫
+  `sensor.<渠道>_<窗口>_time_remaining`，报的是剩余占比；现在叫 `_time_elapsed`，报已用时间。
+  **实体 ID 和数值方向都变了**（原 `60` 现在对应 `40`）。旧的 `_time_remaining` 实体会在升级后
+  自动从注册表移除，引用它的卡片与自动化需要改名并把阈值反过来。
 - `_cost` 来自 AxonHub 按用量日志算出的 `periodCost`，只有 AxonHub 能确定周期起点、且该周期
   确有花费的窗口才有（`zenmux` 被上游显式排除）。它需要币种作为单位：集成在 setup 时读取一次
   `systemGeneralSettings.currencyCode`（AxonHub 默认 `USD`），**读不到就不创建该实体**，而不是
@@ -245,8 +253,8 @@ automation:
 - **AxonHub v1.0.0-beta8 及以上**会把各 provider 的额度统一归一化到 `quotaData._limits`
   数组（`window`、`usageRatio`，与 provider 无关）。集成优先使用它，这也是它能覆盖没有专门
   解析器的 provider（Command Code、OpenCode Go、Cline、ZenMux 等）的原因。窗口传感器为
-  `sensor.<渠道>_<窗口>_used`（已用百分比）、`_reset`（重置时间）与 `_time_remaining`
-  （窗口时间剩余占比），AxonHub 的 `period_cost` / `period_quota` 会作为属性暴露。
+  `sensor.<渠道>_<窗口>_used`（已用额度）、`_reset`（重置时间）、`_time_elapsed`
+  （已用时间）与 `_cost`（花费），AxonHub 的 `period_cost` / `period_quota` 也会作为属性暴露。
 - **更早的版本**（自 v0.8.7 引入 `Channel.providerQuotaStatus` 起）存的是各 provider 的原始
   payload（`windows`、`rate_limit`、`quota_snapshots` 等），集成按 provider 类型分别解析。
 
@@ -315,10 +323,10 @@ CI 还会跑 `hassfest` 和 HACS 校验，见
 **界面语言跟 Home Assistant 走**，无需在集成里配置。目前内置 **英语**（`translations/en.json`）
 与**简体中文**（`translations/zh-Hans.json`）。
 
-- 所有实体名（包括每个窗口的 `_used` / `_reset` / `_time_remaining` / `_cost`）都来自翻译表，
-  会随 HA 语言变化。例如同一个实体在英文下是 `5h window used`，在中文下是 `5h 窗口已用`。
+- 所有实体名（包括每个窗口的 `_used` / `_reset` / `_time_elapsed` / `_cost`）都来自翻译表，
+  会随 HA 语言变化。例如同一个实体在英文下是 `5h window used`，在中文下是 `5h 窗口已用额度`。
 - 窗口标识（`5h`、`Primary`、`premium_interactions`）**保持 AxonHub 原样不翻译**，因为它们是
-  供应商的术语；翻译的是其后的部分（已用 / 重置时间 / 时间剩余 / 花费）。
+  供应商的术语；翻译的是其后的部分（已用额度 / 重置时间 / 已用时间 / 花费）。
 - **实体 ID 不随语言变化**，始终是英文。Home Assistant 只在语言属于
   `homeassistant.generated.languages.NATIVE_ENTITY_IDS` 时用本地化名字生成实体 ID，而
   `zh-Hans` / `zh-Hant` 都不在其中，因此中文用户的实体 ID 与文档示例一致。

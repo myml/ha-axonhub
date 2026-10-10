@@ -8,6 +8,7 @@ services and re-authentication.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -17,6 +18,7 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.axonhub.api import (
@@ -388,12 +390,13 @@ async def test_setup_creates_quota_entities(
     assert hass.states.get("sensor.claude_max_5h_window_remaining") is None
     assert hass.states.get("sensor.claude_max_7d_window_remaining") is None
 
-    five_hour_time = hass.states.get("sensor.claude_max_5h_window_time_remaining")
+    five_hour_time = hass.states.get("sensor.claude_max_5h_window_time_elapsed")
     assert five_hour_time is not None
     assert five_hour_time.attributes["unit_of_measurement"] == "%"
-    # The fixture resets in the past relative to the test clock, so the share
-    # clamps to zero rather than going negative.
-    assert five_hour_time.state == "0.0"
+    # The fixture resets in the past relative to the test clock, so the whole
+    # window counts as elapsed and the share clamps to 100 rather than
+    # overshooting.
+    assert five_hour_time.state == "100.0"
     assert five_hour_time.attributes["period_start"] == "2025-12-31T19:00:00+00:00"
     assert five_hour_time.attributes["reset_at"] == "2026-01-01T00:00:00+00:00"
 
@@ -488,11 +491,12 @@ async def test_legacy_next_reset_entity_is_removed(
 async def test_legacy_remaining_entities_are_removed(
     hass: HomeAssistant, patched_client: PatchedClient
 ) -> None:
-    """The quota-remaining entities of 0.4.0 are cleaned up.
+    """The quota-remaining entities of earlier releases are cleaned up.
 
     A derived one (Claude) and Copilot's primary one are registered on purpose:
     the latter's unique id carries no ``remaining`` suffix, so cleanup has to
-    match the entity id too. ``_time_remaining`` must survive both.
+    match the entity id too. ``_time_remaining`` is a leftover as well now that
+    the window time entity reports the elapsed side under ``_time_elapsed``.
     """
     entry = make_entry()
     entry.add_to_hass(hass)
@@ -506,7 +510,7 @@ async def test_legacy_remaining_entities_are_removed(
             f"{entry.entry_id}_channel_3_snapshot_premium_interactions",
             "copilot_premium_interactions_remaining",
         ),
-        # Must survive the cleanup.
+        # Also a leftover: the elapsed side replaced it.
         (
             f"{entry.entry_id}_channel_1_window_5h_time_remaining",
             "claude_max_5h_window_time_remaining",
@@ -521,10 +525,9 @@ async def test_legacy_remaining_entities_are_removed(
 
     assert registry.async_get("sensor.claude_max_5h_window_remaining") is None
     assert registry.async_get("sensor.copilot_premium_interactions_remaining") is None
-    # The time-remaining entity is a different entity and stays.
-    assert (
-        registry.async_get("sensor.claude_max_5h_window_time_remaining") is not None
-    )
+    assert registry.async_get("sensor.claude_max_5h_window_time_remaining") is None
+    # ...and the elapsed side took its place.
+    assert registry.async_get("sensor.claude_max_5h_window_time_elapsed") is not None
     # Copilot's percentage entity is now the consumed side.
     assert registry.async_get("sensor.copilot_premium_interactions_used") is not None
 
@@ -779,13 +782,13 @@ async def test_window_entity_names_follow_the_language(
     await hass.async_block_till_done()
 
     expected = {
-        "sensor.claude_max_5h_window_used": "Claude Max 5h 窗口已用",
+        "sensor.claude_max_5h_window_used": "Claude Max 5h 窗口已用额度",
         "sensor.claude_max_5h_window_reset": "Claude Max 5h 窗口重置时间",
-        "sensor.claude_max_5h_window_time_remaining": "Claude Max 5h 窗口时间剩余",
-        "sensor.chatgpt_plus_primary_window_used": "ChatGPT Plus Primary 窗口已用",
+        "sensor.claude_max_5h_window_time_elapsed": "Claude Max 5h 窗口已用时间",
+        "sensor.chatgpt_plus_primary_window_used": "ChatGPT Plus Primary 窗口已用额度",
         # A bucket style window keeps its provider identifier verbatim.
         "sensor.copilot_premium_interactions_used": (
-            "Copilot premium_interactions 已用"
+            "Copilot premium_interactions 已用额度"
         ),
     }
     for entity_id, name in expected.items():
@@ -815,3 +818,44 @@ async def test_window_entity_names_fall_back_to_english(
     assert used.attributes["friendly_name"] == "Claude Max 5h window used"
     # ...and the entity id is still the English one.
     assert hass.states.get("sensor.claude_max_5h_window_used") is not None
+
+
+async def test_window_time_entity_reports_elapsed_not_remaining(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """The window time sensor counts up, so it pairs with the used percentage.
+
+    A window that is one quarter through must read 25, not 75: the two sensors
+    then say "40% of the quota gone, 25% of the time gone" and comparing them
+    needs no mental inversion.
+    """
+    now = dt_util.utcnow()
+    live = {
+        "subscription_status": "active",
+        "_limits": [
+            {
+                "type": "token",
+                "status": "available",
+                "usageRatio": 0.4,
+                "ready": True,
+                "window": "5h",
+                "nextResetAt": (now + timedelta(hours=3)).isoformat(),
+                "periodStart": (now - timedelta(hours=1)).isoformat(),
+            }
+        ],
+    }
+    patched_client.channels = [node(9, "Live", "claudecode", "available", live)]
+
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    used = hass.states.get("sensor.live_5h_window_used")
+    elapsed = hass.states.get("sensor.live_5h_window_time_elapsed")
+    assert used is not None and elapsed is not None
+
+    assert used.state == "40.0"
+    # 1 of 4 hours gone. Were this still the remaining side it would be 75.
+    assert elapsed.state == "25.0"
+    assert elapsed.attributes["state_class"] == "measurement"

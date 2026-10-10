@@ -79,10 +79,7 @@ def _async_remove_legacy_entities(hass: HomeAssistant, entry: ConfigEntry) -> No
     * ``_next_reset`` — the channel wide reset entity, until resets became per
       window.
     * ``_remaining`` — the quota-remaining entity, until windows settled on
-      exposing the consumed side only. It has to be matched on the entity id as
-      well: for Copilot the remaining side *was* the primary entity, so its
-      unique id carries no such suffix. ``_time_remaining`` is a different
-      entity and must survive, hence the extra check.
+      exposing the consumed side only.
     """
     registry = er.async_get(hass)
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
@@ -91,13 +88,20 @@ def _async_remove_legacy_entities(hass: HomeAssistant, entry: ConfigEntry) -> No
 
 
 def _is_removed_remaining(entity: er.RegistryEntry) -> bool:
-    """Return True for a leftover quota-remaining entity."""
-    for identifier in (entity.unique_id, entity.entity_id):
-        if identifier.endswith("_remaining") and not identifier.endswith(
-            "_time_remaining"
-        ):
-            return True
-    return False
+    """Return True for a leftover quota-remaining entity.
+
+    Matches the entity id as well as the unique id: for Copilot the remaining
+    side *was* the primary entity, so its unique id carries no such suffix.
+
+    ``_time_remaining`` is swept up here deliberately. The window time entity
+    reports the elapsed side now and is registered as ``_time_elapsed``, so
+    anything still ending in ``_remaining`` is a leftover whose value would
+    contradict its name.
+    """
+    return any(
+        identifier.endswith("_remaining")
+        for identifier in (entity.unique_id, entity.entity_id)
+    )
 
 
 def _build_instance_entities(
@@ -178,11 +182,12 @@ def _build_entities(
                 entities[f"{channel_key}_metric_{metric.key}_reset"] = (
                     AxonHubQuotaResetSensor(coordinator, channel_key, metric.key)
                 )
-            # How much of the window is left needs both of its ends, so a window
-            # whose start the provider does not pin down gets no such entity.
+            # How much of the window has passed needs both of its ends, so a
+            # window whose start the provider does not pin down gets no such
+            # entity.
             if metric.period_start is not None and metric.reset_at is not None:
-                entities[f"{channel_key}_metric_{metric.key}_time_remaining"] = (
-                    AxonHubQuotaTimeRemainingSensor(
+                entities[f"{channel_key}_metric_{metric.key}_time_elapsed"] = (
+                    AxonHubQuotaTimeElapsedSensor(
                         coordinator, channel_key, metric.key
                     )
                 )
@@ -456,13 +461,15 @@ class AxonHubQuotaCostSensor(AxonHubMetricEntity, SensorEntity):
         return attributes
 
 
-class AxonHubQuotaTimeRemainingSensor(AxonHubMetricEntity, SensorEntity):
-    """How much of one quota window is left, in percent.
+class AxonHubQuotaTimeElapsedSensor(AxonHubMetricEntity, SensorEntity):
+    """How much of one quota window has already passed, in percent.
 
     Answers "am I burning quota faster than the window refills": 82% of the
-    quota used with 60% of the window still ahead reads very differently from
-    the same 82% with the window about to reset. Recomputed on every poll from
-    the window's start and reset time.
+    quota used with only 46% of the window gone means it will run out before
+    the reset, while the same 82% at 90% elapsed is business as usual. Sitting
+    next to the used percentage, both read as "how much is gone", so the two
+    numbers compare directly instead of one having to be inverted by hand.
+    Recomputed on every poll from the window's start and reset time.
     """
 
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -474,18 +481,18 @@ class AxonHubQuotaTimeRemainingSensor(AxonHubMetricEntity, SensorEntity):
     ) -> None:
         """Initialize the window time sensor."""
         super().__init__(
-            coordinator, channel_key, metric_key, suffix="_time_remaining"
+            coordinator, channel_key, metric_key, suffix="_time_elapsed"
         )
 
-    _name_slot = "time_remaining"
+    _name_slot = "time_elapsed"
 
     @property
     def native_value(self) -> float | None:
-        """Return how much of the window is still ahead."""
+        """Return how much of the window has passed."""
         metric = self._metric
         if metric is None:
             return None
-        return metric.time_remaining_percent(dt_util.utcnow())
+        return metric.time_elapsed_percent(dt_util.utcnow())
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

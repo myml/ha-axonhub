@@ -110,9 +110,9 @@ four entities:
 
 | Entity | Description |
 |--------|-------------|
-| `sensor.<channel>_<window>_used` | **Quota used**, in percent. |
+| `sensor.<channel>_<window>_used` | **Quota used**: how much of this window's quota is gone, in percent. |
 | `sensor.<channel>_<window>_reset` | **When that window resets** (`device_class: timestamp`, for example `sensor.claude_max_5h_window_reset`). |
-| `sensor.<channel>_<window>_time_remaining` | **How much of the window is left**, as a percentage of the window's length. |
+| `sensor.<channel>_<window>_time_elapsed` | **Time elapsed**: how much of the window has passed, as a percentage of its length. |
 | `sensor.<channel>_<window>_cost` | **What the window cost so far** (`device_class: monetary`), only when AxonHub could price it. |
 
 Notes:
@@ -122,7 +122,13 @@ Notes:
   integration **inverts** them: 12.5% remaining surfaces as
   `sensor.copilot_premium_interactions_used` = `87.5`. A threshold automation therefore
   works across every provider without a special case for Copilot.
-- The percentage, the reset time, the time share and the amount are **four different
+- **Quota and time both report the consumed side, so the two compare directly**: `_used` is
+  the share of the quota spent, `_time_elapsed` the share of the window's time gone.
+  `82% used` with `46% elapsed` means the window runs out before it resets, while the same
+  82% at 90% elapsed is business as usual. This is the idea behind AxonHub's own
+  `severity = u * (u / d)`, except the integration hands you the raw numbers instead of
+  deciding a severity for you.
+- The used quota, the reset time, the elapsed time and the amount are **four different
   entities**: Home Assistant gives every entity exactly one state and one `device_class`,
   so a `%`, a timestamp and money cannot share a state. To show several values in a single
   row, read the `value` / `unit` attributes of the `_reset` entity (the paired used
@@ -133,11 +139,17 @@ Notes:
   `systemGeneralSettings.currencyCode` once per setup (AxonHub defaults to `USD`) and
   **creates no such entity when it cannot read one**, rather than exposing a unitless
   number. Changing the currency takes effect after a config entry reload.
-- `_time_remaining` needs to know where the window **starts**: it uses `periodStart` from
+- `_time_elapsed` needs to know where the window **starts**: it uses `periodStart` from
   AxonHub's normalized `_limits` when present, and otherwise derives it from the reset time
   and the window's fixed length (5h / 7d / 30d / daily / weekly; Codex reports
   `limit_window_seconds`). **Billing-cycle windows therefore get no such entity** —
   Copilot's monthly reset date has no length to derive from.
+- **Upgrading from 0.7 or earlier**: the window time entity used to be
+  `sensor.<channel>_<window>_time_remaining` and reported the share still ahead; it is now
+  `_time_elapsed` and reports the share already gone. **Both the entity id and the
+  direction of the value changed** (what read `60` now reads `40`). The old
+  `_time_remaining` entity is removed from the registry on upgrade, and cards or
+  automations referring to it need the new name and an inverted threshold.
 - Window entities only appear when the provider actually reports that window, and a `_reset`
   entity only when it reports a reset for it. An empty Claude Code `overage` window, for
   instance, produces no entity, and a Codex window without `reset_at` gets no reset entity.
@@ -259,9 +271,9 @@ shapes are supported, so both older and newer AxonHub releases work:
   `quotaData._limits` array (`window`, `usageRatio`, provider-independent). The
   integration prefers this, which is why it also covers providers it has no
   bespoke parser for (Command Code, OpenCode Go, Cline, ZenMux, ...). Window
-  sensors are `sensor.<channel>_<window>_used` (quota used), `_reset` for the reset time
-  and `_time_remaining` for the share of the window still ahead; `period_cost` /
-  `period_quota` from AxonHub show up as attributes.
+  sensors are `sensor.<channel>_<window>_used` (quota used), `_reset` for the reset time,
+  `_time_elapsed` for the share of the window already gone and `_cost` for what it spent;
+  `period_cost` / `period_quota` from AxonHub show up as attributes too.
 - **Older releases** (from v0.8.7, which introduced `Channel.providerQuotaStatus`)
   store a per-provider raw payload instead (`windows`, `rate_limit`,
   `quota_snapshots`, ...), which the integration parses per provider type.
@@ -338,11 +350,11 @@ integration. English (`translations/en.json`) and Simplified Chinese
 (`translations/zh-Hans.json`) ship today.
 
 - Every entity name comes from the translation tables, including each window's `_used` /
-  `_reset` / `_time_remaining` / `_cost`, so it changes with the HA language: the same
-  entity reads `5h window used` in English and `5h 窗口已用` in Chinese.
+  `_reset` / `_time_elapsed` / `_cost`, so it changes with the HA language: the same
+  entity reads `5h window used` in English and `5h 窗口已用额度` in Chinese.
 - The window identifier (`5h`, `Primary`, `premium_interactions`) is **kept exactly as
   AxonHub reports it**, since it is provider terminology; only the part after it is
-  translated (used / reset / time remaining / cost).
+  translated (used quota / reset / elapsed time / cost).
 - **Entity ids never change with the language** and stay English. Home Assistant only
   builds localized entity ids for languages listed in
   `homeassistant.generated.languages.NATIVE_ENTITY_IDS`, which neither `zh-Hans` nor

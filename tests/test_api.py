@@ -823,20 +823,22 @@ def test_window_exposes_used_value_and_time_share() -> None:
     assert metric.used_value == 82.0
     # A rate limit window drops the "window" word from the placeholder and lets
     # the translation template supply it, so English stays "5h window used"
-    # while Chinese can read "5h 窗口已用".
+    # while Chinese can read "5h 窗口已用额度".
     assert metric.is_rate_limit_window is True
     assert metric.window_token == "5h"
 
-    assert metric.time_remaining_percent(start) == 100.0
-    assert metric.time_remaining_percent(start + timedelta(hours=2)) == 60.0
-    assert metric.time_remaining_percent(start + timedelta(hours=5)) == 0.0
-    # A poll landing after the stored reset reports nothing left rather than a
-    # negative share, and without a window start there is no share at all.
-    assert metric.time_remaining_percent(start + timedelta(hours=9)) == 0.0
+    # The elapsed side, so it grows as the window burns down and pairs with
+    # used_value: 82% of the quota gone at 40% elapsed means trouble.
+    assert metric.time_elapsed_percent(start) == 0.0
+    assert metric.time_elapsed_percent(start + timedelta(hours=2)) == 40.0
+    assert metric.time_elapsed_percent(start + timedelta(hours=5)) == 100.0
+    # A poll landing after the stored reset reports the whole window as elapsed
+    # rather than overshooting, and without a window start there is no share.
+    assert metric.time_elapsed_percent(start + timedelta(hours=9)) == 100.0
     assert (
         quota.QuotaMetric(
             key="k", name="W used", value=1.0, reset_at=start + timedelta(hours=5)
-        ).time_remaining_percent(start)
+        ).time_elapsed_percent(start)
         is None
     )
 

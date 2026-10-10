@@ -101,25 +101,25 @@
         "name": "累计缓存命中率"
       },
       "quota_window_used": {
-        "name": "{window} 窗口已用"
+        "name": "{window} 窗口已用额度"
       },
       "quota_window_reset": {
         "name": "{window} 窗口重置时间"
       },
-      "quota_window_time_remaining": {
-        "name": "{window} 窗口时间剩余"
+      "quota_window_time_elapsed": {
+        "name": "{window} 窗口已用时间"
       },
       "quota_window_cost": {
         "name": "{window} 窗口花费"
       },
       "quota_limit_used": {
-        "name": "{window} 已用"
+        "name": "{window} 已用额度"
       },
       "quota_limit_reset": {
         "name": "{window} 重置时间"
       },
-      "quota_limit_time_remaining": {
-        "name": "{window} 时间剩余"
+      "quota_limit_time_elapsed": {
+        "name": "{window} 已用时间"
       },
       "quota_limit_cost": {
         "name": "{window} 花费"

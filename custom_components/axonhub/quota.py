@@ -164,12 +164,17 @@ class QuotaMetric:
             return None
         return self.value if self.used else _round(100 - self.value)
 
-    def time_remaining_percent(self, now: datetime) -> float | None:
-        """Return how much of the window is left, in percent.
+    def time_elapsed_percent(self, now: datetime) -> float | None:
+        """Return how much of the window has already passed, in percent.
 
-        ``None`` until both ends of the window are known. The share is clamped
-        to 0..100 because a poll can land slightly after the stored reset time,
-        and a window that has already reset reports nothing left.
+        ``None`` until both ends of the window are known. This is the elapsed
+        side, not the remaining one: paired with :attr:`used_value` it answers
+        the question a window actually poses — quota is at 82% while only 46%
+        of the time has gone, so the window runs out before it resets.
+
+        The share is clamped to 0..100 because a poll can land slightly outside
+        the stored window, and a window past its reset reports all of it as
+        elapsed rather than a value above 100.
         """
         if self.reset_at is None or self.period_start is None:
             return None
@@ -178,7 +183,7 @@ class QuotaMetric:
         if total <= 0:
             return None
 
-        share = (self.reset_at - now).total_seconds() / total
+        share = (now - self.period_start).total_seconds() / total
         return _round(max(0.0, min(1.0, share)) * 100)
 
 
