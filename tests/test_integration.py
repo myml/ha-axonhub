@@ -410,20 +410,23 @@ async def test_setup_creates_quota_entities(
         if "plain_anthropic" in entity_id
     ]
 
+    # Look the devices up per config entry: HA 2026.10 deprecated both mapping
+    # access to `DeviceRegistry.devices` and `DeviceEntry.config_entries`, while
+    # iterating the registry directly only yields entries from that release on.
+    # `async_entries_for_config_entry` behaves the same across the supported HA
+    # range, and filtering by entry id already proves ownership, so no
+    # `config_entries` assertion is needed.
     devices = dr.async_get(hass)
     channel_devices = [
         device
-        for device in devices.devices.values()
+        for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
         if device.name in {"Claude Max", "ChatGPT Plus", "Copilot"}
     ]
     assert len(channel_devices) == 3, [device.name for device in channel_devices]
-    assert all(
-        entry.entry_id in device.config_entries for device in channel_devices
-    ), "channel devices must belong to the config entry"
 
     hub = next(
         device
-        for device in devices.devices.values()
+        for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
         if (DOMAIN, entry.entry_id) in device.identifiers
     )
     assert hub.name == "axon.local:8090"
@@ -510,7 +513,7 @@ async def test_setup_creates_instance_statistics(
     devices = dr.async_get(hass)
     hub = next(
         device
-        for device in devices.devices.values()
+        for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
         if (DOMAIN, entry.entry_id) in device.identifiers
     )
     registry = er.async_get(hass)
