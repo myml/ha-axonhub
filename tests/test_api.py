@@ -8,6 +8,7 @@ normalization of each provider's ``quotaData`` payload.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -796,3 +797,58 @@ def test_copilot_reset_epoch_unit_is_inferred() -> None:
 
     assert reset_for(1767225600) == "2026-01-01T00:00:00+00:00"
     assert reset_for(1767225600000) == "2026-01-01T00:00:00+00:00"
+
+
+def test_window_exposes_both_percentages_and_time_share() -> None:
+    """A window reports the used side, its remaining counterpart and time left."""
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    metric = quota.QuotaMetric(
+        key="window_5h",
+        name="5h window used",
+        value=82.0,
+        unit="%",
+        reset_at=start + timedelta(hours=5),
+        period_start=start,
+    )
+
+    assert metric.window_label == "5h window"
+    assert metric.counterpart_name == "5h window remaining"
+    assert metric.counterpart_value == 18.0
+    assert metric.reset_name == "5h window reset"
+    assert metric.time_remaining_name == "5h window time remaining"
+
+    assert metric.time_remaining_percent(start) == 100.0
+    assert metric.time_remaining_percent(start + timedelta(hours=2)) == 60.0
+    assert metric.time_remaining_percent(start + timedelta(hours=5)) == 0.0
+    # A poll landing after the stored reset reports nothing left rather than a
+    # negative share, and without a window start there is no share at all.
+    assert metric.time_remaining_percent(start + timedelta(hours=9)) == 0.0
+    assert (
+        quota.QuotaMetric(
+            key="k", name="W used", value=1.0, reset_at=start + timedelta(hours=5)
+        ).time_remaining_percent(start)
+        is None
+    )
+
+
+def test_remaining_side_metric_gets_a_used_counterpart() -> None:
+    """Copilot reports remaining, so the derived counterpart is the used side."""
+    metric = quota.QuotaMetric(
+        key="snapshot_premium_interactions",
+        name="premium_interactions remaining",
+        value=12.5,
+        unit="%",
+        used=False,
+    )
+
+    assert metric.window_label == "premium_interactions"
+    assert metric.counterpart_name == "premium_interactions used"
+    assert metric.counterpart_value == 87.5
+    assert metric.reset_name == "premium_interactions reset"
+
+
+def test_no_window_no_percentages() -> None:
+    """Without a usable value the counterpart stays ``None`` instead of 100."""
+    metric = quota.QuotaMetric(key="k", name="W used", value=None)
+
+    assert metric.counterpart_value is None

@@ -104,21 +104,35 @@ Provider specific window sensors:
 | GitHub Copilot | `sensor.<channel>_<quota>_remaining` (for example `sensor.copilot_premium_interactions_remaining`) | Remaining percentage per quota snapshot. Accounts without snapshots get the value computed from `limited_user_quotas` / `total_quotas`. |
 | NanoGPT | `sensor.<channel>_weekly_input_tokens_used`, `sensor.<channel>_daily_input_tokens_used`, `sensor.<channel>_daily_images_used` | Utilization of each subscription window, in percent. |
 
-**Reset time per window.** Providers reset their windows independently — a Claude Code
-5-hour window and its 7-day window do not expire together — so every window that comes
-with a reset time also gets its own timestamp entity:
+**The full set per window.** Providers reset their windows independently — a Claude Code
+5-hour window and its 7-day window do not expire together — so each window exposes up to
+four entities:
 
 | Entity | Description |
 |--------|-------------|
-| `sensor.<channel>_<window>_reset` | When that window resets (`device_class: timestamp`, for example `sensor.claude_max_5h_window_reset`). |
+| `sensor.<channel>_<window>_used` | **Quota used**, in percent. |
+| `sensor.<channel>_<window>_remaining` | **Quota remaining**, in percent (100 − used). |
+| `sensor.<channel>_<window>_reset` | **When that window resets** (`device_class: timestamp`, for example `sensor.claude_max_5h_window_reset`). |
+| `sensor.<channel>_<window>_time_remaining` | **How much of the window is left**, as a percentage of the window's length. |
 
 Notes:
 
-- The percentage and the reset time are **two entities**: Home Assistant gives every entity
-  exactly one state and one `device_class`, so a `%` and a timestamp cannot share a state.
-  To show both in a single row, read the `value` / `unit` attributes of the `_reset` entity
-  (the paired percentage) or the `next_reset_at` attribute of the `_used` entity (an ISO
-  8601 string).
+- **Used and remaining always come as a pair**, whichever side the provider reports:
+  Copilot's `quota_snapshots` carry `percent_remaining`, so its primary entity is
+  `_remaining` and the integration derives the matching `_used`
+  (`sensor.copilot_premium_interactions_used` = 100 − remaining); every other provider
+  reports utilisation and gets a derived `_remaining`. Neither side is ever renamed, and
+  the two values are always complementary.
+- The percentage, the reset time and the time share are **three different entities**: Home
+  Assistant gives every entity exactly one state and one `device_class`, so a `%` and a
+  timestamp cannot share a state. To show several values in a single row, read the
+  `value` / `unit` attributes of the `_reset` entity (the paired percentage) or the
+  `next_reset_at` attribute of the `_used` entity (an ISO 8601 string).
+- `_time_remaining` needs to know where the window **starts**: it uses `periodStart` from
+  AxonHub's normalized `_limits` when present, and otherwise derives it from the reset time
+  and the window's fixed length (5h / 7d / 30d / daily / weekly; Codex reports
+  `limit_window_seconds`). **Billing-cycle windows therefore get no such entity** —
+  Copilot's monthly reset date has no length to derive from.
 - Window entities only appear when the provider actually reports that window, and a `_reset`
   entity only when it reports a reset for it. An empty Claude Code `overage` window, for
   instance, produces no entity, and a Codex window without `reset_at` gets no reset entity.
@@ -231,9 +245,9 @@ shapes are supported, so both older and newer AxonHub releases work:
   `quotaData._limits` array (`window`, `usageRatio`, provider-independent). The
   integration prefers this, which is why it also covers providers it has no
   bespoke parser for (Command Code, OpenCode Go, Cline, ZenMux, ...). Window
-  sensors are `sensor.<channel>_<window>_used` in percent plus
-  `sensor.<channel>_<window>_reset` for the reset time; `period_cost` /
-  `period_quota` from AxonHub show up as attributes.
+  sensors are `sensor.<channel>_<window>_used` / `_remaining` (quota used and left),
+  `_reset` for the reset time and `_time_remaining` for the share of the window still
+  ahead; `period_cost` / `period_quota` from AxonHub show up as attributes.
 - **Older releases** (from v0.8.7, which introduced `Channel.providerQuotaStatus`)
   store a per-provider raw payload instead (`windows`, `rate_limit`,
   `quota_snapshots`, ...), which the integration parses per provider type.

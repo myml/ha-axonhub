@@ -33,7 +33,7 @@ instances:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.const import PERCENTAGE
@@ -42,6 +42,23 @@ from homeassistant.util import dt as dt_util
 from .const import QUOTA_CHANNEL_TYPES
 
 STATUS_UNKNOWN = "unknown"
+
+# Entity name suffixes. A quota window always exposes both percentages, so the
+# builders name one side and derive the other from these.
+_USED_SUFFIX = " used"
+_REMAINING_SUFFIX = " remaining"
+
+# Fixed window lengths, used to derive a window's start when the provider only
+# reports its reset. The normalized `_limits` payload carries `periodStart`
+# directly, but the per-provider raw payloads do not, and without a start there
+# is no way to tell how far through the window we are.
+_WINDOW_DURATIONS: dict[str, timedelta] = {
+    "5h": timedelta(hours=5),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+}
 
 
 @dataclass(slots=True)
@@ -71,6 +88,31 @@ class QuotaMetric:
     instance may not parse, ...).
     """
 
+    used: bool = True
+    """Whether :attr:`value` is consumption (``True``) or remaining headroom.
+
+    Every provider reports utilisation except GitHub Copilot, whose snapshots
+    carry ``percent_remaining``. The flag decides which of the two percentages
+    is the primary entity (named by the builder) and which is the derived
+    counterpart, so both are exposed without the builders repeating labels.
+    """
+
+    period_start: datetime | None = None
+    """Start of this window, when the provider pins it down.
+
+    Needed to tell how far through a window we are. The normalized ``_limits``
+    payload carries it; the per-provider raw payloads do not, but the windows
+    with a fixed length can derive it from :attr:`reset_at`.
+    """
+
+    @property
+    def window_label(self) -> str:
+        """Return the window label without the used/remaining suffix."""
+        for suffix in (_USED_SUFFIX, _REMAINING_SUFFIX):
+            if self.name.endswith(suffix):
+                return self.name[: -len(suffix)]
+        return self.name
+
     @property
     def reset_name(self) -> str:
         """Return the entity name of this window's reset timestamp.
@@ -78,10 +120,47 @@ class QuotaMetric:
         Derived from :attr:`name` so a window always pairs ``<window> used``
         with ``<window> reset`` without every builder repeating the label.
         """
-        for suffix in (" used", " remaining"):
-            if self.name.endswith(suffix):
-                return f"{self.name[: -len(suffix)]} reset"
-        return f"{self.name} reset"
+        return f"{self.window_label} reset"
+
+    @property
+    def counterpart_name(self) -> str:
+        """Return the entity name of the opposite percentage.
+
+        A window that reports utilisation pairs with a ``remaining`` entity and
+        vice versa, so both percentages exist whichever way the provider
+        reports it (Copilot's snapshots are the remaining side).
+        """
+        suffix = _REMAINING_SUFFIX if self.used else _USED_SUFFIX
+        return f"{self.window_label}{suffix}"
+
+    @property
+    def counterpart_value(self) -> float | None:
+        """Return the opposite percentage, ``None`` without a usable value."""
+        if self.value is None:
+            return None
+        return _round(100 - self.value)
+
+    @property
+    def time_remaining_name(self) -> str:
+        """Return the entity name of the window's remaining-time share."""
+        return f"{self.window_label} time remaining"
+
+    def time_remaining_percent(self, now: datetime) -> float | None:
+        """Return how much of the window is left, in percent.
+
+        ``None`` until both ends of the window are known. The share is clamped
+        to 0..100 because a poll can land slightly after the stored reset time,
+        and a window that has already reset reports nothing left.
+        """
+        if self.reset_at is None or self.period_start is None:
+            return None
+
+        total = (self.reset_at - self.period_start).total_seconds()
+        if total <= 0:
+            return None
+
+        share = (self.reset_at - now).total_seconds() / total
+        return _round(max(0.0, min(1.0, share)) * 100)
 
 
 @dataclass(slots=True)
@@ -289,6 +368,7 @@ def _limits_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
             key = f"{key}_{len(metrics)}"
         used_keys.add(key)
 
+        reset_at = _parse_time(raw.get("nextResetAt"))
         metrics.append(
             QuotaMetric(
                 key=key,
@@ -297,7 +377,12 @@ def _limits_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 unit=PERCENTAGE,
                 icon="mdi:percent",
                 attributes={k: v for k, v in attributes.items() if v is not None},
-                reset_at=_parse_time(raw.get("nextResetAt")),
+                reset_at=reset_at,
+                # AxonHub prices a period from its start, so `periodStart` is
+                # what makes the daily cost aggregation possible; fall back to
+                # the window length for payloads that omit it.
+                period_start=_parse_time(raw.get("periodStart"))
+                or _window_period_start(reset_at, window),
             )
         )
 
@@ -319,6 +404,13 @@ _NANOGPT_WINDOW_LABELS = {
     "weeklyInputTokens": "Weekly input tokens",
     "dailyInputTokens": "Daily input tokens",
     "dailyImages": "Daily images",
+}
+
+# NanoGPT names its windows after their period instead of a plain duration.
+_NANOGPT_WINDOW_DURATIONS = {
+    "weeklyInputTokens": timedelta(days=7),
+    "dailyInputTokens": timedelta(days=1),
+    "dailyImages": timedelta(days=1),
 }
 
 
@@ -349,6 +441,7 @@ def _claudecode_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
         if reset:
             attributes["reset"] = reset
 
+        reset_at = _unix_seconds(reset)
         metrics.append(
             QuotaMetric(
                 key=f"window_{window_key}",
@@ -357,7 +450,10 @@ def _claudecode_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 unit=PERCENTAGE,
                 icon="mdi:percent",
                 attributes=attributes,
-                reset_at=_unix_seconds(reset),
+                reset_at=reset_at,
+                # The 5h/7d windows have a fixed length, so their start follows
+                # from the reset even though this payload omits it.
+                period_start=_window_period_start(reset_at, window_key),
             )
         )
 
@@ -405,6 +501,10 @@ def _codex_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 icon="mdi:percent",
                 attributes=attributes,
                 reset_at=_unix_seconds(reset_at),
+                # Codex reports the window length outright.
+                period_start=_period_start_from_seconds(
+                    _unix_seconds(reset_at), window_seconds
+                ),
             )
         )
 
@@ -451,6 +551,9 @@ def _copilot_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                     icon="mdi:battery-heart-variant",
                     attributes=attributes,
                     reset_at=_epoch(reset_at),
+                    # Copilot is the one provider whose payload is the remaining
+                    # side of the window rather than the consumed side.
+                    used=False,
                 )
             )
 
@@ -485,6 +588,7 @@ def _copilot_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 unit=PERCENTAGE,
                 icon="mdi:battery-heart-variant",
                 attributes=attributes,
+                used=False,
             )
         )
 
@@ -518,6 +622,8 @@ def _nanogpt_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
         if reset_at:
             attributes["resetAt"] = reset_at
 
+        reset_at_dt = _unix_millis(reset_at)
+        duration = _NANOGPT_WINDOW_DURATIONS.get(window_key)
         metrics.append(
             QuotaMetric(
                 key=f"window_{_slug(window_key)}",
@@ -526,7 +632,10 @@ def _nanogpt_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 unit=PERCENTAGE,
                 icon="mdi:percent",
                 attributes=attributes,
-                reset_at=_unix_millis(reset_at),
+                reset_at=reset_at_dt,
+                period_start=reset_at_dt - duration
+                if reset_at_dt is not None and duration is not None
+                else None,
             )
         )
 
@@ -599,6 +708,35 @@ def _parse_time(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt_util.UTC)
     return dt_util.as_utc(parsed)
+
+
+def _window_period_start(
+    reset_at: datetime | None, window: str | None
+) -> datetime | None:
+    """Derive a window's start from its reset time and known length.
+
+    Only the windows in :data:`_WINDOW_DURATIONS` have a length that is fixed
+    by definition; everything else (a billing cycle, a monthly reset date) has
+    no derivable start and simply gets no time-remaining entity.
+    """
+    if reset_at is None or not window:
+        return None
+
+    duration = _WINDOW_DURATIONS.get(window.strip().lower())
+    if duration is None:
+        return None
+
+    return reset_at - duration
+
+
+def _period_start_from_seconds(
+    reset_at: datetime | None, seconds: int | None
+) -> datetime | None:
+    """Derive a window's start from a provider reported window length."""
+    if reset_at is None or not seconds or seconds <= 0:
+        return None
+
+    return reset_at - timedelta(seconds=seconds)
 
 
 def _unix_seconds(timestamp: float | None) -> datetime | None:

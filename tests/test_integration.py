@@ -376,6 +376,23 @@ async def test_setup_creates_quota_entities(
     # The channel wide reset entity is gone: reset is per window now.
     assert hass.states.get("sensor.claude_max_next_quota_reset") is None
 
+    # Both percentages exist for every window, whichever side the provider
+    # reports, plus how much of the window is still ahead.
+    five_hour_remaining = hass.states.get("sensor.claude_max_5h_window_remaining")
+    assert five_hour_remaining is not None
+    assert five_hour_remaining.state == "18.0"
+    assert five_hour_remaining.attributes["unit_of_measurement"] == "%"
+    assert hass.states.get("sensor.claude_max_7d_window_remaining").state == "59.0"
+
+    five_hour_time = hass.states.get("sensor.claude_max_5h_window_time_remaining")
+    assert five_hour_time is not None
+    assert five_hour_time.attributes["unit_of_measurement"] == "%"
+    # The fixture resets in the past relative to the test clock, so the share
+    # clamps to zero rather than going negative.
+    assert five_hour_time.state == "0.0"
+    assert five_hour_time.attributes["period_start"] == "2025-12-31T19:00:00+00:00"
+    assert five_hour_time.attributes["reset_at"] == "2026-01-01T00:00:00+00:00"
+
     ready = hass.states.get("binary_sensor.claude_max_quota_ready")
     assert ready is not None
     assert ready.state == "on"
@@ -401,6 +418,11 @@ async def test_setup_creates_quota_entities(
     assert (
         hass.states.get("sensor.copilot_premium_interactions_reset").state
         == "2026-01-01T00:00:00+00:00"
+    )
+    # Copilot reports the remaining side, so the derived counterpart is `used`
+    # and the original entity keeps its name.
+    assert (
+        hass.states.get("sensor.copilot_premium_interactions_used").state == "87.5"
     )
 
     # Channels without a quota checker are ignored entirely.

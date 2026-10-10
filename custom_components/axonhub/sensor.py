@@ -26,6 +26,7 @@ from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import AxonHubRuntime
 from .const import DOMAIN, STATUS_OPTIONS
@@ -122,11 +123,29 @@ def _build_entities(
             entities[f"{channel_key}_metric_{metric.key}"] = AxonHubQuotaMetricSensor(
                 coordinator, channel_key, metric.key
             )
+            # Both percentages of a window are always exposed: the builder names
+            # the side the provider reports, this adds the opposite one. Skipped
+            # without a number, otherwise it would sit at `unknown` forever.
+            if metric.value is not None:
+                opposite = "remaining" if metric.used else "used"
+                entities[f"{channel_key}_metric_{metric.key}_{opposite}"] = (
+                    AxonHubQuotaCounterpartSensor(
+                        coordinator, channel_key, metric.key, opposite
+                    )
+                )
             # A window only gets a reset entity when the provider actually
             # reported one for it; otherwise it would sit at `unknown` forever.
             if metric.reset_at is not None:
                 entities[f"{channel_key}_metric_{metric.key}_reset"] = (
                     AxonHubQuotaResetSensor(coordinator, channel_key, metric.key)
+                )
+            # How much of the window is left needs both of its ends, so a window
+            # whose start the provider does not pin down gets no such entity.
+            if metric.period_start is not None and metric.reset_at is not None:
+                entities[f"{channel_key}_metric_{metric.key}_time_remaining"] = (
+                    AxonHubQuotaTimeRemainingSensor(
+                        coordinator, channel_key, metric.key
+                    )
                 )
 
     return entities
@@ -316,6 +335,85 @@ class AxonHubQuotaResetSensor(AxonHubMetricEntity, SensorEntity):
         attributes = self._base_attributes(metric)
         attributes["value"] = metric.value
         attributes["unit"] = metric.unit
+        return attributes
+
+
+class AxonHubQuotaCounterpartSensor(AxonHubMetricEntity, SensorEntity):
+    """The opposite percentage of one quota window.
+
+    Providers report either the consumed or the remaining side of a window
+    (Copilot reports remaining), so this fills in whichever side is missing and
+    leaves every window with both ``used`` and ``remaining`` entities.
+    """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_icon = "mdi:percent"
+
+    def __init__(
+        self,
+        coordinator: AxonHubQuotaCoordinator,
+        channel_key: str,
+        metric_key: str,
+        opposite: str,
+    ) -> None:
+        """Initialize the counterpart percentage sensor."""
+        super().__init__(coordinator, channel_key, metric_key, suffix=f"_{opposite}")
+
+    def _entity_name(self, metric: QuotaMetric) -> str:
+        """Return the opposite side's entity name."""
+        return metric.counterpart_name
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the opposite percentage."""
+        metric = self._metric
+        return metric.counterpart_value if metric is not None else None
+
+
+class AxonHubQuotaTimeRemainingSensor(AxonHubMetricEntity, SensorEntity):
+    """How much of one quota window is left, in percent.
+
+    Answers "am I burning quota faster than the window refills": 82% of the
+    quota used with 60% of the window still ahead reads very differently from
+    the same 82% with the window about to reset. Recomputed on every poll from
+    the window's start and reset time.
+    """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_icon = "mdi:timer-sand"
+
+    def __init__(
+        self, coordinator: AxonHubQuotaCoordinator, channel_key: str, metric_key: str
+    ) -> None:
+        """Initialize the window time sensor."""
+        super().__init__(
+            coordinator, channel_key, metric_key, suffix="_time_remaining"
+        )
+
+    def _entity_name(self, metric: QuotaMetric) -> str:
+        """Return the window's remaining-time entity name."""
+        return metric.time_remaining_name
+
+    @property
+    def native_value(self) -> float | None:
+        """Return how much of the window is still ahead."""
+        metric = self._metric
+        if metric is None:
+            return None
+        return metric.time_remaining_percent(dt_util.utcnow())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the window boundaries the share is computed from."""
+        metric = self._metric
+        if metric is None:
+            return {}
+
+        attributes = self._base_attributes(metric)
+        attributes["period_start"] = _isoformat(metric.period_start)
+        attributes["reset_at"] = _isoformat(metric.reset_at)
         return attributes
 
 
