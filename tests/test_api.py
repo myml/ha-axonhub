@@ -297,6 +297,11 @@ class MockAxonHub:
         if "dashboardOverview" in query:
             return web.json_response({"data": DASHBOARD_RESPONSE})
 
+        if "systemGeneralSettings" in query:
+            return web.json_response(
+                {"data": {"systemGeneralSettings": {"currencyCode": "CNY"}}}
+            )
+
         if "queryChannels" in query:
             channels = CHANNELS
             extra_errors: list[dict[str, Any]] = []
@@ -860,3 +865,34 @@ def test_no_window_no_percentage() -> None:
         used=False,
     )
     assert unlimited.used_value is None
+
+
+async def test_currency_is_read_from_system_settings(mock_axonhub: Any) -> None:
+    """The instance currency comes from systemGeneralSettings."""
+    import aiohttp
+
+    state, base_url = mock_axonhub
+
+    async with aiohttp.ClientSession() as session:
+        client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
+        assert await client.async_get_currency() == "CNY"
+
+    body = state.graphql_bodies[-1]
+    assert "systemGeneralSettings" in body["query"]
+    assert "currencyCode" in body["query"]
+
+
+async def test_currency_failure_is_tolerated(mock_axonhub: Any) -> None:
+    """A failure to read the currency yields None instead of raising.
+
+    It is only used to unit the money sensors, so a broken or older instance
+    must not fail setup over it; the cost sensors are simply left out.
+    """
+    import aiohttp
+
+    state, base_url = mock_axonhub
+    state.graphql_error = "Cannot query field \"systemGeneralSettings\"."
+
+    async with aiohttp.ClientSession() as session:
+        client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
+        assert await client.async_get_currency() is None

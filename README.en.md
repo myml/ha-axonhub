@@ -106,13 +106,14 @@ Provider specific window sensors (**all of them report quota used**):
 
 **The full set per window.** Providers reset their windows independently — a Claude Code
 5-hour window and its 7-day window do not expire together — so each window exposes up to
-three entities:
+four entities:
 
 | Entity | Description |
 |--------|-------------|
 | `sensor.<channel>_<window>_used` | **Quota used**, in percent. |
 | `sensor.<channel>_<window>_reset` | **When that window resets** (`device_class: timestamp`, for example `sensor.claude_max_5h_window_reset`). |
 | `sensor.<channel>_<window>_time_remaining` | **How much of the window is left**, as a percentage of the window's length. |
+| `sensor.<channel>_<window>_cost` | **What the window cost so far** (`device_class: monetary`), only when AxonHub could price it. |
 
 Notes:
 
@@ -121,11 +122,17 @@ Notes:
   integration **inverts** them: 12.5% remaining surfaces as
   `sensor.copilot_premium_interactions_used` = `87.5`. A threshold automation therefore
   works across every provider without a special case for Copilot.
-- The percentage, the reset time and the time share are **three different entities**: Home
-  Assistant gives every entity exactly one state and one `device_class`, so a `%` and a
-  timestamp cannot share a state. To show several values in a single row, read the
-  `value` / `unit` attributes of the `_reset` entity (the paired used percentage) or the
-  `next_reset_at` attribute of the `_used` entity (an ISO 8601 string).
+- The percentage, the reset time, the time share and the amount are **four different
+  entities**: Home Assistant gives every entity exactly one state and one `device_class`,
+  so a `%`, a timestamp and money cannot share a state. To show several values in a single
+  row, read the `value` / `unit` attributes of the `_reset` entity (the paired used
+  percentage) or the `next_reset_at` attribute of the `_used` entity (an ISO 8601 string).
+- `_cost` comes from the `periodCost` AxonHub computes from its usage logs, so it only
+  exists for windows whose period AxonHub could pin down and that actually spent something
+  (`zenmux` is excluded upstream). It needs a currency as its unit: the integration reads
+  `systemGeneralSettings.currencyCode` once per setup (AxonHub defaults to `USD`) and
+  **creates no such entity when it cannot read one**, rather than exposing a unitless
+  number. Changing the currency takes effect after a config entry reload.
 - `_time_remaining` needs to know where the window **starts**: it uses `periodStart` from
   AxonHub's normalized `_limits` when present, and otherwise derives it from the reset time
   and the window's fixed length (5h / 7d / 30d / daily / weekly; Codex reports
@@ -152,9 +159,11 @@ configured:
 |--------|-------------|
 | `sensor.<instance>_total_requests` | Every request AxonHub has tracked, failures included. Attributes: `failed_requests`, `success_rate`. |
 | `sensor.<instance>_failed_requests` | Requests that ended in a failure. |
+| `sensor.<instance>_success_rate` | **Share of requests that succeeded**, in percent. |
 | `sensor.<instance>_requests_today` / `_this_week` / `_this_month` | Request count of the current calendar day / week / month in AxonHub's timezone. |
 | `sensor.<instance>_requests_last_week` | Previous week, for week-over-week comparisons. |
 | `sensor.<instance>_tokens_today` / `_this_week` / `_this_month` / `_all_time` | Total tokens per window. Attributes: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_hit_rate`. |
+| `sensor.<instance>_cache_hit_rate_today` / `_this_week` / `_this_month` / `_all_time` | **Cache hit rate per window**, in percent. Attributes: `input_tokens`, `cached_tokens`. |
 | `binary_sensor.<instance>_statistics_available` | Whether AxonHub returns the statistics. `off` means the account lacks the `read:dashboard` scope (or the AxonHub build is too old); the statistics entities then read `unavailable` while **every quota entity keeps working**. |
 
 Notes:
@@ -168,13 +177,20 @@ Notes:
 - A window's total is input + output + cached. AxonHub keeps cached prompt tokens *out*
   of `prompt_tokens`, so the integration adds them back and exposes the derived
   `cache_hit_rate` (cached ÷ (input + cached)).
+- **The success and cache hit rates are entities, not just attributes**: Home Assistant
+  records long term statistics for a sensor's state only, so a number left on an attribute
+  can never be charted over time. Both use `measurement`, so their mean / min / max are
+  recorded. The same values stay on the original entities' attributes, so existing
+  templates keep working.
 - The counters use the `total_increasing` state class, so Home Assistant can chart daily
   and weekly deltas even though the calendar windows reset. `requests_last_week` is a
   fixed past window and stays a plain measurement.
 - These values come from AxonHub's `dashboardOverview` / `tokenStats` queries and need an
   account with the `read:dashboard` scope (the owner account has it). That scope is
   independent of the `read:channels` the quotas need, and the integration polls them with
-  a separate coordinator, so a missing scope only hides the entities above.
+  a separate coordinator, so a missing scope only hides the entities above. The per-window
+  `_cost` additionally reads `systemGeneralSettings` for the currency, which needs no
+  extra scope.
 
 Dashboard card example:
 

@@ -155,10 +155,13 @@ class PatchedClient:
         self.channel_reads = 0
         self.stats_reads = 0
         self.checks = 0
+        self.currency_reads = 0
         self.fail_auth = False
         self.api_error: str | None = None
         self.stats_error: str | None = None
         self.stats: dict[str, Any] = DASHBOARD_DATA
+        self.currency: str | None = "USD"
+        self.channels: list[dict[str, Any]] = CHANNELS
 
 
 @pytest.fixture
@@ -179,7 +182,7 @@ def patched_client(monkeypatch: pytest.MonkeyPatch) -> PatchedClient:
             raise AxonHubAuthError("Invalid email or password")
         if recorder.api_error:
             raise AxonHubApiError(recorder.api_error)
-        return CHANNELS
+        return recorder.channels
 
     async def _get_dashboard_stats(self) -> dict[str, Any]:
         recorder.stats_reads += 1
@@ -192,12 +195,17 @@ def patched_client(monkeypatch: pytest.MonkeyPatch) -> PatchedClient:
     async def _trigger(self) -> None:
         recorder.checks += 1
 
+    async def _get_currency(self) -> str | None:
+        recorder.currency_reads += 1
+        return recorder.currency
+
     monkeypatch.setattr(AxonHubClient, "async_sign_in", _sign_in)
     monkeypatch.setattr(AxonHubClient, "async_get_channels", _get_channels)
     monkeypatch.setattr(
         AxonHubClient, "async_get_dashboard_stats", _get_dashboard_stats
     )
     monkeypatch.setattr(AxonHubClient, "async_trigger_quota_check", _trigger)
+    monkeypatch.setattr(AxonHubClient, "async_get_currency", _get_currency)
     return recorder
 
 
@@ -657,3 +665,96 @@ async def test_auth_failure_starts_reauth(
     assert entry.state is ConfigEntryState.SETUP_ERROR
     flows = hass.config_entries.flow.async_progress()
     assert any(flow["context"]["source"] == "reauth" for flow in flows), flows
+
+
+# A channel whose payload uses the normalized `_limits` shape, which is the one
+# that carries the money AxonHub prices from its usage logs.
+PRICED_DATA = {
+    "subscription_status": "active",
+    "_limits": [
+        {
+            "type": "token",
+            "status": "warning",
+            "usageRatio": 0.42,
+            "ready": True,
+            "window": "monthly",
+            "nextResetAt": "2026-02-01T00:00:00Z",
+            "periodStart": "2026-01-01T00:00:00Z",
+            "periodCost": 1.25,
+            "periodQuota": 5.0,
+        }
+    ],
+}
+
+
+async def test_cost_entity_uses_instance_currency(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """A priced window gets a money sensor unit-ed with AxonHub's currency."""
+    patched_client.channels = [node(9, "Priced", "commandcode", "warning", PRICED_DATA)]
+    entry = make_entry()
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert patched_client.currency_reads == 1
+
+    used = hass.states.get("sensor.priced_monthly_used")
+    assert used is not None, sorted(hass.states.async_entity_ids())
+    assert used.state == "42.0"
+    # The amount stays an attribute too, for templates that already read it.
+    assert used.attributes["period_cost"] == 1.25
+
+    cost = hass.states.get("sensor.priced_monthly_cost")
+    assert cost is not None
+    assert cost.state == "1.25"
+    assert cost.attributes["device_class"] == "monetary"
+    assert cost.attributes["state_class"] == "total"
+    assert cost.attributes["unit_of_measurement"] == "USD"
+    assert cost.attributes["period_start"] == "2026-01-01T00:00:00+00:00"
+
+
+async def test_cost_entities_are_hidden_without_currency(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """No reported currency means no money sensor, rather than a unitless one."""
+    patched_client.channels = [node(9, "Priced", "commandcode", "warning", PRICED_DATA)]
+    patched_client.currency = None
+
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.priced_monthly_cost") is None
+    # The percentage of the same window is unaffected.
+    assert hass.states.get("sensor.priced_monthly_used").state == "42.0"
+
+
+async def test_instance_ratios_are_entities(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """The success and cache hit rates are chartable sensors, not attributes."""
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    success = hass.states.get("sensor.axon_local_8090_success_rate")
+    assert success is not None, sorted(hass.states.async_entity_ids())
+    assert success.state == "99.12"
+    assert success.attributes["unit_of_measurement"] == "%"
+    assert success.attributes["state_class"] == "measurement"
+
+    # 40000 cached of (120000 input + 40000 cached) prompt tokens.
+    cache = hass.states.get("sensor.axon_local_8090_cache_hit_rate_today")
+    assert cache is not None
+    assert cache.state == "25.0"
+    assert cache.attributes["unit_of_measurement"] == "%"
+    assert cache.attributes["input_tokens"] == 120000
+    assert cache.attributes["cached_tokens"] == 40000
+
+    # All four token windows get their own rate.
+    for window in ("today", "this_week", "this_month", "all_time"):
+        assert hass.states.get(f"sensor.axon_local_8090_cache_hit_rate_{window}")

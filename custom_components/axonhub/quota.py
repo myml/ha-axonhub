@@ -104,6 +104,14 @@ class QuotaMetric:
     with a fixed length can derive it from :attr:`reset_at`.
     """
 
+    period_cost: float | None = None
+    """Money this window cost so far, when AxonHub could price it.
+
+    AxonHub fills ``periodCost`` from its usage logs for every limit whose
+    period start it knows, so this is only present for priced windows. It
+    becomes a money sensor, unit-ed with the instance currency.
+    """
+
     @property
     def window_label(self) -> str:
         """Return the window label without the used/remaining suffix."""
@@ -148,6 +156,11 @@ class QuotaMetric:
     def time_remaining_name(self) -> str:
         """Return the entity name of the window's remaining-time share."""
         return f"{self.window_label} time remaining"
+
+    @property
+    def cost_name(self) -> str:
+        """Return the entity name of the window's accumulated cost."""
+        return f"{self.window_label} cost"
 
     def time_remaining_percent(self, now: datetime) -> float | None:
         """Return how much of the window is left, in percent.
@@ -387,6 +400,7 @@ def _limits_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
                 # the window length for payloads that omit it.
                 period_start=_parse_time(raw.get("periodStart"))
                 or _window_period_start(reset_at, window),
+                period_cost=period_cost,
             )
         )
 

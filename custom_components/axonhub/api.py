@@ -135,6 +135,22 @@ mutation HomeAssistantRefreshProviderQuotas {
 }
 """
 
+# The instance currency, used to unit the per-period cost sensors AxonHub
+# computes from its usage logs. Read once per config entry setup rather than on
+# every poll: it only changes when an administrator edits the system settings,
+# and a config entry reload picks that up.
+#
+# The resolver performs no scope check of its own, so a `read:channels` account
+# can reach it, but the caller still tolerates a failure — an AxonHub build that
+# predates the field simply keeps the cost sensors hidden.
+SYSTEM_SETTINGS_QUERY = """
+query HomeAssistantSystemSettings {
+  systemGeneralSettings {
+    currencyCode
+  }
+}
+"""
+
 
 class AxonHubError(Exception):
     """Base class for AxonHub API errors."""
@@ -381,6 +397,37 @@ class AxonHubClient:
         few minutes on instances with many quota-enabled channels.
         """
         await self.async_graphql(TRIGGER_CHECK_MUTATION, timeout=CHECK_TIMEOUT)
+
+    async def async_get_currency(self) -> str | None:
+        """Return the instance currency code, or ``None`` when unavailable.
+
+        Used as the unit of the money sensors. This never raises: an older
+        AxonHub that does not expose ``systemGeneralSettings``, a missing
+        value, or any transport/auth failure all yield ``None``, so the caller
+        can skip those sensors instead of guessing a unit or failing setup. A
+        genuine credential problem still surfaces through the quota poll.
+        """
+        try:
+            data, errors = await self.async_graphql_with_errors(SYSTEM_SETTINGS_QUERY)
+        except AxonHubError as err:
+            _LOGGER.debug("AxonHub did not report its currency: %s", err)
+            return None
+
+        if errors:
+            _LOGGER.debug(
+                "AxonHub answered the general settings partially: %s",
+                _format_graphql_errors(errors),
+            )
+
+        settings = data.get("systemGeneralSettings")
+        if not isinstance(settings, dict):
+            return None
+
+        code = settings.get("currencyCode")
+        if not isinstance(code, str) or not code.strip():
+            return None
+
+        return code.strip().upper()
 
     async def _async_request(
         self,

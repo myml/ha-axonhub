@@ -95,14 +95,15 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
 | GitHub Copilot | `sensor.<渠道>_<quota>_used`（例如 `sensor.copilot_premium_interactions_used`）。没有快照的账号按 `limited_user_quotas` / `total_quotas` 计算。 |
 | NanoGPT | `sensor.<渠道>_weekly_input_tokens_used`、`sensor.<渠道>_daily_input_tokens_used`、`sensor.<渠道>_daily_images_used` |
 
-**每个窗口的三个实体**：供应商各自的窗口独立重置（Claude Code 的 5 小时窗口和 7 天窗口不会
-同时到期），因此每个窗口最多有三个实体：
+**每个窗口最多四个实体**：供应商各自的窗口独立重置（Claude Code 的 5 小时窗口和 7 天窗口不会
+同时到期），因此每个窗口最多有四个实体：
 
 | 实体 | 说明 |
 |------|------|
 | `sensor.<渠道>_<窗口>_used` | **额度已用百分比**。 |
 | `sensor.<渠道>_<窗口>_reset` | **重置时间**（`device_class: timestamp`，例如 `sensor.claude_max_5h_window_reset`）。 |
 | `sensor.<渠道>_<窗口>_time_remaining` | **窗口时间剩余占比**：距离重置还剩多少时间，占整个窗口长度的百分比。 |
+| `sensor.<渠道>_<窗口>_cost` | **本窗口已花费金额**（`device_class: monetary`），仅当 AxonHub 能定价时出现。 |
 
 说明：
 
@@ -110,14 +111,18 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
   `quota_snapshots` 上报的本来是 `percent_remaining`，集成会**反转成已用**再暴露，例如剩余
   12.5% 对应 `sensor.copilot_premium_interactions_used` = `87.5`。这样阈值自动化在所有供应商
   之间通用，不必为 Copilot 反向写条件。
-- 百分比、重置时间、时间占比是**三个不同的实体**：Home Assistant 每个实体只能有一个状态和
-  一个 `device_class`，`%` 与时间戳无法共用一个状态。想在卡片上一行显示多个值，可读
+- 百分比、重置时间、时间占比、金额是**四个不同的实体**：Home Assistant 每个实体只能有一个状态
+  和一个 `device_class`，`%`、时间戳与金额无法共用一个状态。想在卡片上一行显示多个值，可读
   `_reset` 实体的 `value` / `unit` 属性（配对的已用百分比），或 `_used` 实体的
   `next_reset_at` 属性（ISO 8601 字符串）。
 - `_time_remaining` 需要知道窗口的**起点**：优先用 AxonHub 归一化 `_limits` 里的 `periodStart`，
   没有时按窗口的固定长度从重置时间反推（5h / 7d / 30d / daily / weekly，Codex 用
   `limit_window_seconds`）。因此**账单周期类窗口（如 Copilot 的月度重置日）不会产生这个实体**
   ——它的长度无从确定。
+- `_cost` 来自 AxonHub 按用量日志算出的 `periodCost`，只有 AxonHub 能确定周期起点、且该周期
+  确有花费的窗口才有（`zenmux` 被上游显式排除）。它需要币种作为单位：集成在 setup 时读取一次
+  `systemGeneralSettings.currencyCode`（AxonHub 默认 `USD`），**读不到就不创建该实体**，而不是
+  给出一个没有单位的数字。改币种后重载配置项即可生效。
 - 只有供应商真的上报了某个窗口时才会创建对应实体。例如 Claude Code 的 `overage` 窗口若为空就
   不会产生实体；Codex 没给 `reset_at` 的窗口也不会有 `_reset` 实体。
 - `<渠道>` 是 AxonHub 中渠道名转成的 slug，例如 `sensor.claude_max_5h_window_used`。
@@ -134,9 +139,11 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
 |------|------|
 | `sensor.<实例>_total_requests` | AxonHub 累计处理过的请求数，含失败。属性：`failed_requests`、`success_rate`。 |
 | `sensor.<实例>_failed_requests` | 累计失败请求数。 |
+| `sensor.<实例>_success_rate` | **请求成功率**（%），由累计请求数与失败数算出。 |
 | `sensor.<实例>_requests_today` / `_this_week` / `_this_month` | 今日 / 本周 / 本月的请求数（按 AxonHub 系统时区的自然日、自然周、自然月）。 |
 | `sensor.<实例>_requests_last_week` | 上周请求数，适合做周环比。 |
 | `sensor.<实例>_tokens_today` / `_this_week` / `_this_month` / `_all_time` | 各时间窗口的 Token 总量。属性：`input_tokens`、`output_tokens`、`cached_tokens`、`cache_hit_rate`。 |
+| `sensor.<实例>_cache_hit_rate_today` / `_this_week` / `_this_month` / `_all_time` | **各窗口的缓存命中率**（%）。属性：`input_tokens`、`cached_tokens`。 |
 | `binary_sensor.<实例>_statistics_available` | AxonHub 是否返回实例统计。`off` 说明账号缺少 `read:dashboard` 权限（或 AxonHub 版本过旧），此时上面这些实体为 `unavailable`，**额度实体不受影响**。 |
 
 说明：
@@ -148,12 +155,16 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
   了结果的请求（也就是 AxonHub 仪表盘上画的那些数）。
 - Token 总量 = 输入 + 输出 + 缓存读取。AxonHub 的 `prompt_tokens` **不含**缓存命中的部分，
   所以集成把它们加回来，并额外给出 `cache_hit_rate`（缓存命中率 = 缓存读取 ÷（输入 + 缓存读取））。
+- **成功率与缓存命中率是独立实体，不只在属性里**：Home Assistant 的长期统计只记录 sensor 的
+  state，放在属性上的数值无法画长期曲线。两者都用 `measurement`，会记录均值 / 最小 / 最大。
+  同样的值仍保留在原实体的属性中，已用模板不必改。
 - 请求数是累计值（`total_requests`、`failed_requests`）与周期性重置的窗口值，因此用
   `total_increasing` 统计类型，可以直接在统计图上按天/周/月看增量；`requests_last_week`
   是固定窗口，用普通测量值。
 - 这组统计走的是 AxonHub 的 `dashboardOverview` / `tokenStats` 查询，需要一个拥有
   `read:dashboard` 权限的账号（owner 账号默认就有）。它和额度用的 `read:channels` 相互独立，
-  集成里也是两个协调器：统计拿不到只影响上面这组实体。
+  集成里也是两个协调器：统计拿不到只影响上面这组实体。窗口额度里的 `_cost` 另需
+  `systemGeneralSettings`（只用来取币种，无额外权限要求）。
 
 仪表盘卡片示例：
 

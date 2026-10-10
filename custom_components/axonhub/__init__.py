@@ -40,6 +40,12 @@ class AxonHubRuntime:
 
     quota: AxonHubQuotaCoordinator
     stats: AxonHubStatsCoordinator
+    currency: str | None = None
+    """Instance currency code, used as the unit of the cost sensors.
+
+    ``None`` when AxonHub did not report one, in which case the cost sensors
+    are left out rather than unitless.
+    """
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -73,8 +79,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     await stats_coordinator.async_refresh()
 
+    # The instance currency is only needed to unit the cost sensors, so a
+    # failure here must never fail setup: `async_get_currency` swallows it and
+    # returns None, which leaves those sensors out.
+    currency = await client.async_get_currency()
+
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = AxonHubRuntime(
-        quota=coordinator, stats=stats_coordinator
+        quota=coordinator, stats=stats_coordinator, currency=currency
     )
 
     # Register a device for the AxonHub instance itself; every channel device
