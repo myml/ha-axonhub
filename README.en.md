@@ -153,6 +153,13 @@ Notes:
 - Window entities only appear when the provider actually reports that window, and a `_reset`
   entity only when it reports a reset for it. An empty Claude Code `overage` window, for
   instance, produces no entity, and a Codex window without `reset_at` gets no reset entity.
+- **CommandCode's monthly reset comes from the raw `current_period_end`, not from the
+  normalized `_limits` value**: the AxonHub backend hands the monthly limit the **channel's
+  earliest 5h/weekly reset** as its own (`addWindow(QuotaWindowMonthly, 0, ..., nextResetAt)`
+  in `commandcode_checker.go`), so using it verbatim made the monthly quota read as resetting
+  within hours and disagree with the AxonHub UI. The integration prefers the provider's real
+  period end, which is also what AxonHub's own frontend renders the monthly row from, and
+  falls back to the normalized value when the raw payload has no such field.
 - `<channel>` is the slugified channel name shown in AxonHub, for example
   `sensor.claude_max_5h_window_used`.
 - The status sensor carries the raw AxonHub payload in its `quota_data` attribute,

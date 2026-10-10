@@ -344,6 +344,16 @@ def _limits_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
     if not isinstance(raw_limits, list):
         return []
 
+    # CommandCode's normalized monthly limit does NOT carry the monthly reset
+    # time: the backend builds it with the channel's earliest 5h/weekly reset as
+    # its own `nextResetAt` (commandcode_checker.go passes `nextResetAt` into
+    # the monthly `addWindow`), so taken at face value the monthly quota would
+    # report as resetting whenever the 5h window does — minutes away. The real
+    # period end only exists in the raw payload, which is also where AxonHub's
+    # own frontend reads it for its monthly row. Only CommandCode writes this
+    # root key; nanoGPT's `currentPeriodEnd` lives under `period`.
+    period_end = _parse_time(quota_data.get("current_period_end"))
+
     entries: list[tuple[str, str, str, dict[str, Any], float | None]] = []
     for raw in raw_limits:
         if not isinstance(raw, dict):
@@ -393,6 +403,8 @@ def _limits_metrics(quota_data: dict[str, Any]) -> list[QuotaMetric]:
         used_keys.add(key)
 
         reset_at = _parse_time(raw.get("nextResetAt"))
+        if period_end is not None and _is_monthly(window):
+            reset_at = period_end
         metrics.append(
             QuotaMetric(
                 key=key,
@@ -733,6 +745,11 @@ def _parse_time(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt_util.UTC)
     return dt_util.as_utc(parsed)
+
+
+def _is_monthly(window: str | None) -> bool:
+    """Return True for a window that resets on a monthly cadence."""
+    return bool(window) and window.strip().lower() == "monthly"
 
 
 def _window_period_start(

@@ -859,3 +859,64 @@ async def test_window_time_entity_reports_elapsed_not_remaining(
     # 1 of 4 hours gone. Were this still the remaining side it would be 75.
     assert elapsed.state == "25.0"
     assert elapsed.attributes["state_class"] == "measurement"
+
+
+async def test_commandcode_monthly_reset_matches_the_axonhub_ui(
+    hass: HomeAssistant, patched_client: PatchedClient
+) -> None:
+    """The monthly reset entity shows the subscription period end.
+
+    AxonHub normalizes CommandCode's monthly limit with the 5h/weekly reset
+    time, so the entity read "later today" instead of the real month end and
+    disagreed with the AxonHub UI, which renders the monthly row from the raw
+    ``current_period_end``.
+    """
+    payload = {
+        "current_period_end": "2026-02-01T12:02:05.000Z",
+        "_limits": [
+            {
+                "type": "subscription_cycle",
+                "window": "5h",
+                "status": "available",
+                "ready": True,
+                "usageRatio": 0.02,
+                "nextResetAt": "2026-01-10T14:00:00Z",
+                "periodStart": "2026-01-10T09:00:00Z",
+            },
+            {
+                "type": "subscription_cycle",
+                "window": "weekly",
+                "status": "available",
+                "ready": True,
+                "usageRatio": 0.31,
+                "nextResetAt": "2026-01-12T15:00:00Z",
+                "periodStart": "2026-01-05T15:00:00Z",
+            },
+            {
+                "type": "subscription_cycle",
+                "window": "monthly",
+                "status": "available",
+                "ready": True,
+                "usageRatio": 0.65,
+                "nextResetAt": "2026-01-10T14:00:00Z",
+                "periodStart": None,
+            },
+        ],
+    }
+    patched_client.channels = [
+        node(9, "Command Code", "commandcode", "available", payload)
+    ]
+
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    monthly_reset = hass.states.get("sensor.command_code_monthly_reset")
+    assert monthly_reset is not None, sorted(hass.states.async_entity_ids())
+    assert monthly_reset.state == "2026-02-01T12:02:05+00:00"
+
+    # The 5h window keeps its own reset rather than inheriting the monthly one.
+    five_hour_reset = hass.states.get("sensor.command_code_5h_window_reset")
+    assert five_hour_reset is not None
+    assert five_hour_reset.state == "2026-01-10T14:00:00+00:00"

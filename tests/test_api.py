@@ -903,3 +903,102 @@ async def test_currency_failure_is_tolerated(mock_axonhub: Any) -> None:
     async with aiohttp.ClientSession() as session:
         client = AxonHubClient(session, base_url, EMAIL, PASSWORD)
         assert await client.async_get_currency() is None
+
+
+def _commandcode_payload(period_end: str | None = None) -> dict[str, Any]:
+    """Build the normalized payload AxonHub returns for CommandCode.
+
+    Reproduces ``commandcode_checker.go``: the monthly limit is added with the
+    channel's earliest 5h/weekly reset as its own ``nextResetAt``, and with a
+    zero window length, so its own reset time is absent from the normalized
+    array. Only the raw payload knows the real period end.
+    """
+    now = datetime(2026, 1, 10, 12, 0, tzinfo=timezone.utc)
+    five_hour = now + timedelta(hours=2)
+    weekly = now + timedelta(days=2, hours=3)
+    payload: dict[str, Any] = {
+        "_limits": [
+            {
+                "type": "subscription_cycle",
+                "window": "5h",
+                "status": "available",
+                "ready": True,
+                "usageRatio": 0.02,
+                "nextResetAt": five_hour.isoformat(),
+                "periodStart": (five_hour - timedelta(hours=5)).isoformat(),
+            },
+            {
+                "type": "subscription_cycle",
+                "window": "weekly",
+                "status": "available",
+                "ready": True,
+                "usageRatio": 0.31,
+                "nextResetAt": weekly.isoformat(),
+                "periodStart": (weekly - timedelta(days=7)).isoformat(),
+            },
+            {
+                "type": "subscription_cycle",
+                "window": "monthly",
+                "status": "available",
+                "ready": True,
+                "usageRatio": 0.65,
+                # Borrowed from the 5h/weekly windows upstream.
+                "nextResetAt": five_hour.isoformat(),
+                "periodStart": None,
+            },
+        ]
+    }
+    if period_end is not None:
+        payload["current_period_end"] = period_end
+    return payload
+
+
+def test_commandcode_monthly_uses_the_period_end_not_the_borrowed_reset() -> None:
+    """The monthly reset comes from the raw period end, not the 5h/weekly one.
+
+    Regression: taken at face value the normalized monthly limit claims to
+    reset when the 5h window does, which showed the monthly quota as resetting
+    in hours instead of weeks and disagreed with the AxonHub UI.
+    """
+    period_end = "2026-02-01T12:02:05.000Z"
+    metrics = {
+        m.key: m for m in quota.build_metrics("commandcode", _commandcode_payload(period_end))
+    }
+
+    monthly = metrics["limit_monthly_subscription_cycle"]
+    assert monthly.reset_at == datetime(2026, 2, 1, 12, 2, 5, tzinfo=timezone.utc)
+    assert monthly.used_value == 65.0
+
+    # The other windows keep their own resets untouched.
+    assert metrics["limit_5h_subscription_cycle"].reset_at == datetime(
+        2026, 1, 10, 14, 0, tzinfo=timezone.utc
+    )
+    assert metrics["limit_weekly_subscription_cycle"].reset_at == datetime(
+        2026, 1, 12, 15, 0, tzinfo=timezone.utc
+    )
+
+
+def test_commandcode_monthly_falls_back_to_the_normalized_reset() -> None:
+    """Without a raw period end the normalized value is still used.
+
+    It may be the borrowed 5h/weekly reset, but reporting nothing would be
+    worse, and this is what every older AxonHub build provides.
+    """
+    metrics = {
+        m.key: m for m in quota.build_metrics("commandcode", _commandcode_payload())
+    }
+
+    monthly = metrics["limit_monthly_subscription_cycle"]
+    assert monthly.reset_at == datetime(2026, 1, 10, 14, 0, tzinfo=timezone.utc)
+
+
+def test_period_end_only_overrides_the_monthly_window() -> None:
+    """A period end must not be applied to non-monthly windows."""
+    payload = _commandcode_payload("2026-02-01T12:02:05.000Z")
+    # A payload where only a 5h window exists still keeps the 5h reset.
+    payload["_limits"] = [payload["_limits"][0]]
+
+    metrics = {m.key: m for m in quota.build_metrics("commandcode", payload)}
+    assert metrics["limit_5h_subscription_cycle"].reset_at == datetime(
+        2026, 1, 10, 14, 0, tzinfo=timezone.utc
+    )

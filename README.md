@@ -133,6 +133,11 @@ cp -r custom_components/axonhub /path/to/homeassistant/config/custom_components/
   给出一个没有单位的数字。改币种后重载配置项即可生效。
 - 只有供应商真的上报了某个窗口时才会创建对应实体。例如 Claude Code 的 `overage` 窗口若为空就
   不会产生实体；Codex 没给 `reset_at` 的窗口也不会有 `_reset` 实体。
+- **CommandCode 的月度重置时间取自原始报文的 `current_period_end`**，而不是归一化 `_limits`
+  里那个值：AxonHub 后端给月度 limit 塞的是**渠道级最早的 5h / 每周重置时间**（见
+  `commandcode_checker.go` 里 `addWindow(QuotaWindowMonthly, 0, ..., nextResetAt)`），照抄会
+  让月度额度显示成「几小时后重置」，与 AxonHub 界面不一致。集成因此优先用原始报文的真实周期
+  结束时间（AxonHub 自己的前端也是这么渲染月度行的）。原始报文没有该字段时回退到归一化值。
 - `<渠道>` 是 AxonHub 中渠道名转成的 slug，例如 `sensor.claude_max_5h_window_used`。
 - 状态实体在 `quota_data` 属性里带有 AxonHub 返回的原始数据；最近一次检查失败时还会有
   `error` 属性，适合用来做模板传感器。它的 `next_reset_at` 属性是 AxonHub 计算出的**渠道级**
