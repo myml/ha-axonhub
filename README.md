@@ -2,6 +2,11 @@
 
 [English](README.en.md) | **简体中文**
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=myml&repository=ha-axonhub&category=integration)
+[![Validate](https://github.com/myml/ha-axonhub/actions/workflows/validate.yml/badge.svg)](https://github.com/myml/ha-axonhub/actions/workflows/validate.yml)
+[![License](https://img.shields.io/github/license/myml/ha-axonhub.svg)](LICENSE)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.12%2B-41BDF5.svg)](https://www.home-assistant.io/)
+
 把 AxonHub 已经采集的**渠道供应商额度**——Claude Code、Codex、GitHub Copilot、NanoGPT
 的订阅窗口——变成 Home Assistant 实体，这样你就能在仪表盘上看到"还剩多少额度"，
 或者基于额度做自动化。
@@ -28,6 +33,13 @@
 ## 安装
 
 ### HACS（自定义仓库）
+
+点这个按钮可以直接在你的 Home Assistant 里打开本仓库（自动填好 owner、仓库名与类别，
+直接进入 HACS 的添加确认页）：
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=myml&repository=ha-axonhub&category=integration)
+
+也可以手动添加：
 
 1. 打开 **HACS → 集成**。
 2. 点击右上角 **⋮** 菜单 → **自定义仓库**。

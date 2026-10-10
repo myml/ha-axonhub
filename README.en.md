@@ -2,6 +2,11 @@
 
 **English** | [简体中文](README.md)
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=myml&repository=ha-axonhub&category=integration)
+[![Validate](https://github.com/myml/ha-axonhub/actions/workflows/validate.yml/badge.svg)](https://github.com/myml/ha-axonhub/actions/workflows/validate.yml)
+[![License](https://img.shields.io/github/license/myml/ha-axonhub.svg)](LICENSE)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.12%2B-41BDF5.svg)](https://www.home-assistant.io/)
+
 A Home Assistant custom integration that surfaces the **provider quota** AxonHub
 already tracks for each channel — the subscription windows of **Claude Code**,
 **Codex**, **GitHub Copilot** and **NanoGPT** — as Home Assistant entities, so you
@@ -34,6 +39,13 @@ Entities show the last known state until that check runs again.
 ## Installation
 
 ### HACS (custom repository)
+
+Click the button to open this repository directly in your Home Assistant instance (the
+owner, repository and category are pre-filled, so you land on HACS' add confirmation):
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=myml&repository=ha-axonhub&category=integration)
+
+Or add it by hand:
 
 1. In Home Assistant open **HACS → Integrations**.
 2. Click the **⋮** menu → **Custom repositories**.
